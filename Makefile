@@ -14,10 +14,11 @@ BIN_DIR  := build
 REDUCE_BENCH := $(BIN_DIR)/reduce_bench
 MAX_BENCH    := $(BIN_DIR)/max_bench
 SOFTMAX_BENCH := $(BIN_DIR)/softmax_bench
+ATTENTION_BENCH := $(BIN_DIR)/attention_bench
 
-.PHONY: all clean run-reduce bench run-max run-softmax
+.PHONY: all clean run-reduce bench run-max run-softmax run-attention
 
-all: $(REDUCE_BENCH) $(MAX_BENCH) $(SOFTMAX_BENCH)
+all: $(REDUCE_BENCH) $(MAX_BENCH) $(SOFTMAX_BENCH) $(ATTENTION_BENCH)
 
 $(BIN_DIR):
 	@mkdir -p $@
@@ -59,6 +60,9 @@ $(SOFTMAX_4_OBJ): $(SRC_DIR)/softmax_4kernal.cu | $(BIN_DIR)
 $(SOFTMAX_BENCH): $(SOFTMAX_3_OBJ) $(SOFTMAX_4_OBJ) $(TEST_DIR)/softmax.cpp | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 
+$(ATTENTION_BENCH): $(SRC_DIR)/attention.cu $(TEST_DIR)/attention.cpp | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+
 run-reduce bench: $(REDUCE_BENCH)
 	$(REDUCE_BENCH)
 
@@ -67,6 +71,9 @@ run-max: $(MAX_BENCH)
 
 run-softmax: $(SOFTMAX_BENCH)
 	$(SOFTMAX_BENCH)
+
+run-attention: $(ATTENTION_BENCH)
+	$(ATTENTION_BENCH)
 
 clean:
 	rm -rf $(BIN_DIR)
