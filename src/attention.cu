@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 #include <cuda_runtime.h>
@@ -15,9 +16,11 @@ __global__ void qkt_kernel(const float *__restrict__ Q, // (M, d)
   if (tidy >= M || tidx >= N)
     return;
 
+  float result = 0.0f;
   for (int i = 0; i < d; i++) {
-    qkt[tidy * N + tidx] += Q[tidy * d + i] * K[tidx * d + i];
+    result += Q[tidy * d + i] * K[tidx * d + i];
   }
+  qkt[tidy * N + tidx] = result;
 }
 
 __device__ inline float warp_max(float val) {
@@ -59,9 +62,9 @@ __device__ inline float atomic_max_float(float *addr, float val) {
 }
 
 template <int BLOCK_SIZE>
-__global__ void max_kernel(const float *__restrict__ input, // (N,)
-                           float *__restrict__ output,      // (1,)
-                           int N) {
+__global__ void max_kernel(const float *__restrict__ input, // (M, N)
+                           float *__restrict__ output,      // (M,)
+                           int M, int N) {
   int tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
   int stride = gridDim.x * BLOCK_SIZE;
 
@@ -91,9 +94,9 @@ __global__ void exp_sum_kernel(float *__restrict__ io,            // (N,)
                                const float *__restrict__ maximum, // (1,)
                                float *__restrict__ total,         // (1,)
                                int d, int N) {
-  __shared__ float sqrtd;
+  __shared__ float inverse_sqrtd;
   if (threadIdx.x == 0) {
-    sqrtd = sqrtf(static_cast<float>(d));
+    inverse_sqrtd = rsqrtf(static_cast<float>(d));
   }
   __syncthreads();
 
@@ -112,10 +115,10 @@ __global__ void exp_sum_kernel(float *__restrict__ io,            // (N,)
     float4 x = io4[i];
 
     float4 y;
-    y.x = __expf((x.x - *maximum) * sqrtd);
-    y.y = __expf((x.y - *maximum) * sqrtd);
-    y.z = __expf((x.z - *maximum) * sqrtd);
-    y.w = __expf((x.w - *maximum) * sqrtd);
+    y.x = __expf((x.x - *maximum) * inverse_sqrtd);
+    y.y = __expf((x.y - *maximum) * inverse_sqrtd);
+    y.z = __expf((x.z - *maximum) * inverse_sqrtd);
+    y.w = __expf((x.w - *maximum) * inverse_sqrtd);
 
     io4[i] = y;
     local_sum += y.x + y.y + y.z + y.w;
@@ -124,7 +127,7 @@ __global__ void exp_sum_kernel(float *__restrict__ io,            // (N,)
   int tail_base = N4 * 4;
   int tail_index = tail_base + tid;
   if (tail_index < N) {
-    float value = __expf((io[tail_index] - *maximum) * sqrtd);
+    float value = __expf((io[tail_index] - *maximum) * inverse_sqrtd);
     io[tail_index] = value;
     local_sum += value;
   }
@@ -183,9 +186,11 @@ __global__ void v_kernel(const float *__restrict__ qkt, // (M, N)
   if (tidy >= M || tidx >= d)
     return;
 
+  float result = 0.0f;
   for (int i = 0; i < N; i++) {
-    output[tidy * d + tidx] += qkt[tidy * N + i] * V[i * d + tidx];
+    result += qkt[tidy * N + i] * V[i * d + tidx];
   }
+  output[tidy * d + tidx] = result;
 }
 
 // Q, K, V, output are device pointers
@@ -195,25 +200,22 @@ extern "C" void solve(const float *__restrict__ Q, const float *__restrict__ K,
   constexpr int BLOCK_SIZE = 256;
   constexpr int GRID_SIZE = 128;
 
-  float *qkt;
+  float *qkt; // (M, N)
   cudaMalloc(&qkt, M * N * sizeof(float));
-  cudaMemset(qkt, 0, M * N * sizeof(float));
 
-  float *maximum_and_total;
-  cudaMalloc(&maximum_and_total, 2 * sizeof(float));
-  cudaMemcpyAsync(&maximum_and_total[0], qkt, sizeof(float),
-                  cudaMemcpyDeviceToDevice);
-  cudaMemsetAsync(&maximum_and_total[1], 0, sizeof(float));
+  float *maximum;
+  cudaMalloc(&maximum, 2 * M * sizeof(float));
+  cudaMemsetAsync(&maximum[0], -INFINITY, M * sizeof(float));
+  float *total = &maximum[M];
+  cudaMemsetAsync(&total[0], 0, M * sizeof(float));
 
-  qkt_kernel<BLOCK_SIZE><<<dim3((M + 15) / 16, (N + 15) / 16), dim3(16, 16)>>>(
+  qkt_kernel<BLOCK_SIZE><<<dim3((N + 15) / 16, (M + 15) / 16), dim3(16, 16)>>>(
       Q, K, qkt, M, d, N);
 
   //   softmax_sqrtd_kernel<BLOCK_SIZE>
   //       <<<128, BLOCK_SIZE>>>(qkt, maximum_and_total, M, d, N);
-  {
+  for (int m = 0; m < M; m++) {
     constexpr int MAX_BLOCKS = 432;
-    const int MN = M * N;
-    const int N = MN;
 
     int max_blocks = (N / 4 + BLOCK_SIZE - 1) / BLOCK_SIZE;
     max_blocks = max_blocks < 1 ? 1 : max_blocks;
@@ -222,18 +224,17 @@ extern "C" void solve(const float *__restrict__ Q, const float *__restrict__ K,
     int blocks = (N + BLOCK_SIZE - 1) / BLOCK_SIZE;
     blocks = blocks > MAX_BLOCKS ? MAX_BLOCKS : blocks;
 
-    max_kernel<BLOCK_SIZE>
-        <<<max_blocks, BLOCK_SIZE>>>(qkt, &maximum_and_total[0], N);
-    exp_sum_kernel<BLOCK_SIZE><<<blocks, BLOCK_SIZE>>>(
-        qkt, &maximum_and_total[0], &maximum_and_total[1], d, N);
+    max_kernel<BLOCK_SIZE><<<max_blocks, BLOCK_SIZE>>>(qkt, maximum, M, N);
+    exp_sum_kernel<BLOCK_SIZE>
+        <<<blocks, BLOCK_SIZE>>>(&qkt[m * N], &maximum[m], &total[m], d, N);
     normalize_kernel<BLOCK_SIZE>
-        <<<blocks, BLOCK_SIZE>>>(qkt, &maximum_and_total[1], N);
+        <<<blocks, BLOCK_SIZE>>>(&qkt[m * N], &total[m], N);
   }
 
-  v_kernel<BLOCK_SIZE><<<dim3((M + 15) / 16, (N + 15) / 16), dim3(16, 16)>>>(
+  v_kernel<BLOCK_SIZE><<<dim3((d + 15) / 16, (M + 15) / 16), dim3(16, 16)>>>(
       qkt, V, output, M, d, N);
 
-  cudaFree((void *)maximum_and_total);
+  cudaFree((void *)maximum);
   cudaFree((void *)qkt);
   cudaDeviceSynchronize();
 }
