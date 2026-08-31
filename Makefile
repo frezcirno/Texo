@@ -16,10 +16,11 @@ MAX_BENCH    := $(BIN_DIR)/max_bench
 SOFTMAX_BENCH := $(BIN_DIR)/softmax_bench
 ATTENTION_BENCH := $(BIN_DIR)/attention_bench
 CONV2D_BENCH := $(BIN_DIR)/conv2d_bench
+CONV3D_BENCH := $(BIN_DIR)/conv3d_bench
 
-.PHONY: all clean run-reduce bench run-max run-softmax run-attention run-conv2d
+.PHONY: all clean run-reduce bench run-max run-softmax run-attention run-conv2d run-conv3d
 
-all: $(REDUCE_BENCH) $(MAX_BENCH) $(SOFTMAX_BENCH) $(ATTENTION_BENCH) $(CONV2D_BENCH)
+all: $(REDUCE_BENCH) $(MAX_BENCH) $(SOFTMAX_BENCH) $(ATTENTION_BENCH) $(CONV2D_BENCH) $(CONV3D_BENCH)
 
 $(BIN_DIR):
 	@mkdir -p $@
@@ -67,6 +68,9 @@ $(ATTENTION_BENCH): $(SRC_DIR)/attention.cu $(TEST_DIR)/attention.cpp | $(BIN_DI
 $(CONV2D_BENCH): $(SRC_DIR)/conv2d.cu $(TEST_DIR)/conv2d.cpp | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 
+$(CONV3D_BENCH): $(SRC_DIR)/conv3d.cu $(TEST_DIR)/conv3d.cpp | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+
 run-reduce bench: $(REDUCE_BENCH)
 	$(REDUCE_BENCH)
 
@@ -81,6 +85,9 @@ run-attention: $(ATTENTION_BENCH)
 
 run-conv2d: $(CONV2D_BENCH)
 	$(CONV2D_BENCH)
+
+run-conv3d: $(CONV3D_BENCH)
+	$(CONV3D_BENCH)
 
 clean:
 	rm -rf $(BIN_DIR)
