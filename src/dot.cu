@@ -25,22 +25,24 @@ template <int BLOCK_SIZE> __device__ inline float block_sum(float val) {
 }
 
 template <int BLOCK_SIZE>
-__global__ void sum(const float *__restrict__ input, float *__restrict__ output,
-                    int N) {
+__global__ void dot(const float *__restrict__ A, const float *__restrict__ B,
+                    float *__restrict__ output, int N) {
   int tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
   int stride = gridDim.x * BLOCK_SIZE;
 
   float sum = 0.0f;
 
   int N4 = N / 4;
-  const float4 *input4 = reinterpret_cast<const float4 *>(input);
+  const float4 *A4 = reinterpret_cast<const float4 *>(A);
+  const float4 *B4 = reinterpret_cast<const float4 *>(B);
   for (int i = tid; i < N4; i += stride) {
-    float4 v = input4[i];
-    sum += v.x + v.y + v.z + v.w;
+    float4 v = A4[i];
+    float4 w = B4[i];
+    sum += v.x * w.x + v.y * w.y + v.z * w.z + v.w * w.w;
   }
   int tail_base = N4 * 4;
   if (tail_base + tid < N) {
-    sum += input[tail_base + tid];
+    sum += A[tail_base + tid] * B[tail_base + tid];
   }
 
   sum = block_sum<BLOCK_SIZE>(sum);
@@ -49,4 +51,9 @@ __global__ void sum(const float *__restrict__ input, float *__restrict__ output,
 }
 
 // A, B, result are device pointers
-extern "C" void solve(const float *A, const float *B, float *result, int N) {}
+extern "C" void solve(const float *A, const float *B, float *result, int N) {
+  constexpr size_t BLOCK_SIZE = 256;
+  //   cudaMemsetAsync(result, 0, sizeof(float));
+  dot<BLOCK_SIZE>
+      <<<(N + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(A, B, result, N);
+}
