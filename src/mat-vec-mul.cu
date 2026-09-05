@@ -44,6 +44,32 @@ __global__ void mat_vec_mul(const float *__restrict__ A, // (M, N)
   }
 }
 
+__global__ void mat_vec_mul_warp(const float *__restrict__ A,
+                                 const float *__restrict__ x,
+                                 float *__restrict__ y, int M, int N) {
+
+  const int lane = threadIdx.x & 31;
+  const int warp = threadIdx.x >> 5;
+  const int warps_per_block = blockDim.x / 32;
+  const int row = blockIdx.x * warps_per_block + warp;
+
+  // 同一个 warp 的 row 相同，因此整个 warp 一起退出
+  if (row >= M) {
+    return;
+  }
+
+  float sum = 0.0f;
+  for (int i = lane; i < N; i += 32) {
+    sum += A[row * N + i] * x[i];
+  }
+
+  sum = warp_sum(sum);
+
+  if (lane == 0) {
+    y[row] = sum;
+  }
+}
+
 // A, x, y are device pointers
 extern "C" void solve(const float *A, // (M, N)
                       const float *x, // (N,)
@@ -52,5 +78,6 @@ extern "C" void solve(const float *A, // (M, N)
   if (M <= 0) {
     return;
   }
-  mat_vec_mul<256><<<M, 256>>>(A, x, y, M, N, nnz);
+  //   mat_vec_mul<256><<<M, 256>>>(A, x, y, M, N, nnz);
+  mat_vec_mul_warp<<<1 + (M - 1) / 8, 256>>>(A, x, y, M, N);
 }
