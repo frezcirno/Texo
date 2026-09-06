@@ -123,19 +123,24 @@ struct BenchResult {
     float gbps;
 };
 
-template <typename Launcher>
-BenchResult bench(const char* name, Launcher launch, int N, int warmup, int iters) {
+template <typename Reset, typename Launcher>
+BenchResult bench(Reset reset, Launcher launch, int N, int warmup, int iters) {
     cudaEvent_t ev_start, ev_stop;
     CUDA_CHECK(cudaEventCreate(&ev_start));
     CUDA_CHECK(cudaEventCreate(&ev_stop));
 
     // Warmup
-    for (int i = 0; i < warmup; ++i) launch();
+    for (int i = 0; i < warmup; ++i) {
+        reset();
+        launch();
+    }
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Time
     float total_ms = 0.f, min_ms = 1e30f;
     for (int i = 0; i < iters; ++i) {
+        // Output initialization is excluded from kernel timing.
+        reset();
         CUDA_CHECK(cudaEventRecord(ev_start));
         launch();
         CUDA_CHECK(cudaEventRecord(ev_stop));
@@ -157,6 +162,10 @@ BenchResult bench(const char* name, Launcher launch, int N, int warmup, int iter
 
 int main(int argc, char** argv) {
     int N = (argc > 1) ? std::atoi(argv[1]) : (1 << 26);  // 默认 ~64M floats
+    if (argc > 2 || N <= 0) {
+        fprintf(stderr, "Usage: %s [positive-N]\n", argv[0]);
+        return EXIT_FAILURE;
+    }
     printf("N = %d  (%.2f MB)\n", N, N * sizeof(float) / 1024.0 / 1024.0);
 
     // 查询 SM 数，给 Kernel 2 的 gridDim 用
@@ -171,7 +180,7 @@ int main(int argc, char** argv) {
     std::uniform_real_distribution<float> dist(-1000.f, 1000.f);
     for (int i = 0; i < N; ++i) h[i] = dist(rng);
     // 塞一个已知最大值方便校验
-    int max_idx = N / 2 + 12345;
+    int max_idx = N / 2;
     h[max_idx] = 9999.f;
     float ref = cpu_max(h.data(), N);
     printf("CPU reference max = %.6f\n\n", ref);
@@ -193,16 +202,18 @@ int main(int argc, char** argv) {
         return v;
     };
 
+    bool passed = true;
+
     // -------------------- Kernel 1 --------------------
     {
         int grid = (N + BLOCK_SIZE - 1) / BLOCK_SIZE;
         printf("Kernel 1 (pure tree, 1 elem/thread):  grid=%d  block=%d\n", grid, BLOCK_SIZE);
         auto launch = [&] {
-            reset_out();
             reduce_max_k1<<<grid, BLOCK_SIZE>>>(d_in, d_out, N);
         };
-        auto r = bench("k1", launch, N, warmup, iters);
+        auto r = bench(reset_out, launch, N, warmup, iters);
         float res = read_out();
+        passed &= (res == ref);
         printf("  avg=%.3f ms  min=%.3f ms  BW=%.1f GB/s  result=%.6f  %s\n\n",
                r.ms_avg, r.ms_min, r.gbps, res, (res == ref ? "OK" : "MISMATCH"));
     }
@@ -216,16 +227,16 @@ int main(int argc, char** argv) {
         printf("Kernel 2 (serial+tree, grid-stride):  grid=%d (%dx SM)  ~%d elems/thread\n",
                grid, grid / sm, elems_per_thread);
         auto launch = [&] {
-            reset_out();
             reduce_max_k2<<<grid, BLOCK_SIZE>>>(d_in, d_out, N);
         };
-        auto r = bench("k2", launch, N, warmup, iters);
+        auto r = bench(reset_out, launch, N, warmup, iters);
         float res = read_out();
+        passed &= (res == ref);
         printf("  avg=%.3f ms  min=%.3f ms  BW=%.1f GB/s  result=%.6f  %s\n\n",
                r.ms_avg, r.ms_min, r.gbps, res, (res == ref ? "OK" : "MISMATCH"));
     }
 
     CUDA_CHECK(cudaFree(d_in));
     CUDA_CHECK(cudaFree(d_out));
-    return 0;
+    return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

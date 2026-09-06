@@ -29,11 +29,14 @@ static bool bench(const char *name, ReduceFn fn,
   CUDA_CHECK(cudaEventCreate(&start_event));
   CUDA_CHECK(cudaEventCreate(&stop_event));
 
+  CUDA_CHECK(cudaMemsetAsync(device_output, 0, sizeof(float)));
   fn(device_input, device_output, static_cast<int>(N));
   CUDA_CHECK(cudaDeviceSynchronize());
 
   float milliseconds = 0.0f;
   for (int i = 0; i < repeat; ++i) {
+    // Reset outside timing so variants cannot reuse a previous result.
+    CUDA_CHECK(cudaMemsetAsync(device_output, 0, sizeof(float)));
     CUDA_CHECK(cudaEventRecord(start_event));
     fn(device_input, device_output, static_cast<int>(N));
     CUDA_CHECK(cudaEventRecord(stop_event));
