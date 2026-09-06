@@ -18,10 +18,11 @@ ATTENTION_BENCH := $(BIN_DIR)/attention_bench
 CONV2D_BENCH := $(BIN_DIR)/conv2d_bench
 CONV3D_BENCH := $(BIN_DIR)/conv3d_bench
 MAT_VEC_BENCH := $(BIN_DIR)/mat_vec_mul_bench
+GEMM_BENCH := $(BIN_DIR)/gemm_bench
 
-.PHONY: all clean run-reduce bench run-max run-softmax run-attention run-conv2d run-conv3d run-mat-vec
+.PHONY: all clean run-reduce bench run-max run-softmax run-attention run-conv2d run-conv3d run-mat-vec run-gemm
 
-all: $(REDUCE_BENCH) $(MAX_BENCH) $(SOFTMAX_BENCH) $(ATTENTION_BENCH) $(CONV2D_BENCH) $(CONV3D_BENCH) $(MAT_VEC_BENCH)
+all: $(REDUCE_BENCH) $(MAX_BENCH) $(SOFTMAX_BENCH) $(ATTENTION_BENCH) $(CONV2D_BENCH) $(CONV3D_BENCH) $(MAT_VEC_BENCH) $(GEMM_BENCH)
 
 $(BIN_DIR):
 	@mkdir -p $@
@@ -77,6 +78,12 @@ $(MAT_VEC_BENCH): $(TEST_DIR)/mat_vec_mul.cu $(SRC_DIR)/mat-vec-mul.cu | $(BIN_D
 
 run-mat-vec: $(MAT_VEC_BENCH)
 	$(MAT_VEC_BENCH)
+
+$(GEMM_BENCH): $(TEST_DIR)/gemm.cu $(SRC_DIR)/gemm.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+
+run-gemm: $(GEMM_BENCH)
+	$(GEMM_BENCH)
 
 run-reduce bench: $(REDUCE_BENCH)
 	$(REDUCE_BENCH)
