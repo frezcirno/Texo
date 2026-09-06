@@ -1,4 +1,4 @@
-# ops
+# Texo
 
 A collection of CUDA operator implementations, correctness tests, and benchmarks.
 This repository follows the process of learning GPU programming: start with a
