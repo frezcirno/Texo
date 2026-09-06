@@ -21,11 +21,12 @@ MAT_VEC_BENCH := $(BIN_DIR)/mat_vec_mul_bench
 GEMM_BENCH := $(BIN_DIR)/gemm_bench
 CAT_CE_TEST := $(BIN_DIR)/cat_ce_test
 MSE_TEST := $(BIN_DIR)/mse_test
+GAUSS_BLUR_TEST := $(BIN_DIR)/gauss_blur_test
 
 
-.PHONY: all clean run-reduce bench run-max run-softmax run-attention run-conv2d run-conv3d run-mat-vec run-gemm run-cat-ce run-mse
+.PHONY: all clean run-reduce bench run-max run-softmax run-attention run-conv2d run-conv3d run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur
 
-all: $(REDUCE_BENCH) $(MAX_BENCH) $(SOFTMAX_BENCH) $(ATTENTION_BENCH) $(CONV2D_BENCH) $(CONV3D_BENCH) $(MAT_VEC_BENCH) $(GEMM_BENCH) $(CAT_CE_TEST) $(MSE_TEST)
+all: $(REDUCE_BENCH) $(MAX_BENCH) $(SOFTMAX_BENCH) $(ATTENTION_BENCH) $(CONV2D_BENCH) $(CONV3D_BENCH) $(MAT_VEC_BENCH) $(GEMM_BENCH) $(CAT_CE_TEST) $(MSE_TEST) $(GAUSS_BLUR_TEST)
 
 $(BIN_DIR):
 	@mkdir -p $@
@@ -99,6 +100,12 @@ $(MSE_TEST): $(TEST_DIR)/mse.cpp $(SRC_DIR)/mse.cu | $(BIN_DIR)
 
 run-mse: $(MSE_TEST)
 	$(MSE_TEST)
+
+$(GAUSS_BLUR_TEST): $(TEST_DIR)/gauss_blur.cpp $(SRC_DIR)/gauss_blur.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+
+run-gauss-blur: $(GAUSS_BLUR_TEST)
+	$(GAUSS_BLUR_TEST)
 
 run-reduce bench: $(REDUCE_BENCH)
 	$(REDUCE_BENCH)
