@@ -143,11 +143,6 @@ __global__ void normalize_kernel(float *__restrict__ output,      // (M, N)
 }
 
 template <int BLOCK_SIZE>
-__global__ void softmax_sqrtd_kernel(float *__restrict__ input, // qkt (M, N)
-                                     float *maximum_and_total,  // (2,)
-                                     int M, int d, int N) {}
-
-template <int BLOCK_SIZE>
 __global__ void v_kernel(const float *__restrict__ qkt, // (M, N)
                          const float *__restrict__ V,   // (N, d)
                          float *__restrict__ output,    // (M, d)
@@ -181,8 +176,6 @@ extern "C" void solve(const float *__restrict__ Q, const float *__restrict__ K,
   qkt_kernel<BLOCK_SIZE><<<dim3((N + 15) / 16, (M + 15) / 16), dim3(16, 16)>>>(
       Q, K, qkt, M, d, N);
 
-  //   softmax_sqrtd_kernel<BLOCK_SIZE>
-  //       <<<128, BLOCK_SIZE>>>(qkt, maximum_and_total, M, d, N);
   max_kernel<BLOCK_SIZE><<<M, BLOCK_SIZE>>>(qkt, maximum, M, N);
   exp_sum_kernel<BLOCK_SIZE><<<M, BLOCK_SIZE>>>(qkt, maximum, total, d, N);
   normalize_kernel<BLOCK_SIZE><<<M, BLOCK_SIZE>>>(qkt, total, N);

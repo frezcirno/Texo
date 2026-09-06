@@ -162,11 +162,8 @@ extern "C" void solve(const float *input, float *output, int N) {
 
   float *maximum_and_total;
   cudaMalloc(&maximum_and_total, 2 * sizeof(float));
-  // float neg_inf = -INFINITY;
-  // cudaMemcpy(maximum, &neg_inf, sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpyAsync(&maximum_and_total[0], input, sizeof(float),
                   cudaMemcpyDeviceToDevice);
-  // cudaMemset(total, 0, sizeof(float));
   cudaMemsetAsync(&maximum_and_total[1], 0, sizeof(float));
 
   max_kernel<BLOCK_SIZE>

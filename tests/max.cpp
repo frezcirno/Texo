@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -16,14 +17,11 @@
     }                                                                       \
   } while (0)
 
-extern "C" void reduce_my(const float *input, float *output, int N);
-extern "C" void reduce_my_v2(const float *input, float *output, int N);
-extern "C" void reduce_stellar(const float *input, float *output, int N);
-extern "C" void reduce_cub(const float *input, float *output, int N);
+extern "C" void max_kernel(const float *input, float *output, int N);
 
-using ReduceFn = void (*)(const float *, float *, int);
+using MaxFn = void (*)(const float *, float *, int);
 
-static void bench(const char *name, ReduceFn fn,
+static bool bench(const char *name, MaxFn fn,
                   const float *device_input, float *device_output,
                   int64_t N, int repeat, float host_result) {
   cudaEvent_t start_event, stop_event;
@@ -57,12 +55,13 @@ static void bench(const char *name, ReduceFn fn,
   std::printf("[%s]\n", name);
   std::printf("  average latency    = %.4f ms\n", milliseconds);
   std::printf("  throughput         = %.4f GB/s\n", bandwidth_gb);
-  std::printf("  device output sum  = %.6f\n", device_result);
+  std::printf("  device output max  = %.6f\n", device_result);
   std::printf("  absolute error     = %.6e\n", error);
   std::printf("  relative error     = %.6e\n", relative_error);
 
   CUDA_CHECK(cudaEventDestroy(start_event));
   CUDA_CHECK(cudaEventDestroy(stop_event));
+  return device_result == host_result;
 }
 
 int main(int argc, char **argv) {
@@ -76,10 +75,20 @@ int main(int argc, char **argv) {
     repeat = std::atoi(argv[2]);
   }
 
-  std::vector<float> host_input(N);
-  for (int64_t i = 0; i < N; ++i) {
-    host_input[i] = 1.0f;
+  if (N <= 0 || N > (1LL << 30) || repeat <= 0) {
+    std::fprintf(stderr, "Expected 0 < N <= 2^30 and repeat > 0\n");
+    return EXIT_FAILURE;
   }
+  std::vector<float> host_input(N);
+  std::mt19937 rng(0xC0FFEE);
+  std::uniform_real_distribution<float> dist(-1000.0f, 1000.0f);
+  for (int64_t i = 0; i < N; ++i) {
+    host_input[i] = dist(rng);
+  }
+  std::uniform_int_distribution<int64_t> idx_dist(0, N - 1);
+  int64_t sentinel_idx = idx_dist(rng);
+  const float sentinel_val = 0.987654321e6f;
+  host_input[sentinel_idx] = sentinel_val;
 
   float *device_input = nullptr;
   float *device_output = nullptr;
@@ -89,26 +98,22 @@ int main(int argc, char **argv) {
   CUDA_CHECK(cudaMemcpy(device_input, host_input.data(), N * sizeof(float),
                         cudaMemcpyHostToDevice));
 
-  float host_result = 0.0f;
+  float host_result = -INFINITY;
   for (int64_t i = 0; i < N; ++i) {
-    host_result += host_input[i];
+    host_result = std::max(host_result, host_input[i]);
   }
 
-  std::printf("CUDA reduce benchmark\n");
+  std::printf("CUDA max-reduce benchmark\n");
   std::printf("  elements           = %lld\n", static_cast<long long>(N));
   std::printf("  repeats            = %d\n", repeat);
-  std::printf("  host reference sum = %.6f\n", host_result);
+  std::printf("  sentinel value     = %.6f at index %lld\n", sentinel_val,
+              static_cast<long long>(sentinel_idx));
+  std::printf("  host reference max = %.6f\n", host_result);
 
-  bench("reduce_my", reduce_my, device_input, device_output, N, repeat,
-        host_result);
-  bench("reduce_my_v2", reduce_my_v2, device_input, device_output, N, repeat,
-        host_result);
-  bench("reduce_stellar", reduce_stellar, device_input, device_output, N, repeat,
-        host_result);
-  bench("reduce_cub", reduce_cub, device_input, device_output, N, repeat,
+  bool passed = bench("max_kernel", max_kernel, device_input, device_output, N, repeat,
         host_result);
 
   CUDA_CHECK(cudaFree(device_input));
   CUDA_CHECK(cudaFree(device_output));
-  return EXIT_SUCCESS;
+  return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

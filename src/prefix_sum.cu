@@ -119,7 +119,7 @@ template <bool Exclusive> void scan(const float *input, float *output, int N) {
   cudaFree(block_sums);
 }
 
-// input, output are device pointers. output[i] = sum(input[0..i)).
+// input, output are device pointers. output[i] = input[0] + ... + input[i] (inclusive).
 extern "C" void solve(const float *input, float *output, int N) {
   if (N <= 0) {
     return;

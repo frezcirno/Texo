@@ -86,7 +86,7 @@ static ValidationResult validate(const std::vector<float> &actual,
   return result;
 }
 
-static void benchmark(const Implementation &implementation,
+static bool benchmark(const Implementation &implementation,
                       const float *device_input, float *device_output,
                       const std::vector<float> &reference, int N, int warmup,
                       int repeat) {
@@ -152,6 +152,7 @@ static void benchmark(const Implementation &implementation,
 
   CUDA_CHECK(cudaEventDestroy(start_event));
   CUDA_CHECK(cudaEventDestroy(stop_event));
+  return validation.passed;
 }
 
 int main(int argc, char **argv) {
@@ -210,12 +211,13 @@ int main(int argc, char **argv) {
   std::printf("  repeats            = %d\n", repeat);
   std::printf("  warmup             = %d\n\n", warmup);
 
+  bool passed = true;
   for (const Implementation &implementation : implementations) {
-    benchmark(implementation, device_input, device_output, reference, N,
+    passed &= benchmark(implementation, device_input, device_output, reference, N,
               warmup, repeat);
   }
 
   CUDA_CHECK(cudaFree(device_input));
   CUDA_CHECK(cudaFree(device_output));
-  return EXIT_SUCCESS;
+  return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

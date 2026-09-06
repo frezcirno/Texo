@@ -49,6 +49,8 @@ __global__ void sum(const float *__restrict__ input, float *__restrict__ output,
 }
 
 extern "C" void solve(const float *input, float *output, int N) {
+  cudaMemsetAsync(output, 0, sizeof(float));
+  if (N <= 0) return;
   constexpr int BLOCK_SIZE = 256;
   // Few hundred blocks: enough to fill A800's 108 SMs, few enough to keep
   // atomicAdd contention on the single output negligible.

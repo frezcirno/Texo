@@ -10,7 +10,7 @@
 #include <vector>
 
 // Include once so the benchmark can instantiate and compare the actual kernels.
-#include "../src/mat-vec-mul.cu"
+#include "../src/mat_vec_mul.cu"
 
 #define CUDA_CHECK(call) do { \
   cudaError_t error = (call); \

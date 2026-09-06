@@ -81,7 +81,8 @@ __global__ void exp_kernel(const float *__restrict__ input,
 template <int BLOCK_SIZE>
 __global__ void sum_kernel(const float *__restrict__ output,
                            float *__restrict__ total, int N) {
-  auto block = cg::this_thread_block();
+  __shared__ cg::block_tile_memory<BLOCK_SIZE> scratch;
+  auto block = cg::this_thread_block(scratch);
   auto tile = cg::tiled_partition<BLOCK_SIZE>(block);
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   float local_sum = tid < N ? output[tid] : 0.0f;

@@ -1,0 +1,26 @@
+name: CUDA build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.6.3-devel-ubuntu22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [sm_75, sm_80]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends make g++
+      - name: Compile and link (no GPU runtime tests)
+        run: make -j2 all compile-kernels NVCC_ARCH=${{ matrix.arch }}

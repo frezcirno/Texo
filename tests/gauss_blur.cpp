@@ -20,8 +20,7 @@ extern "C" void solve(const float*, const float*, float*, int, int, int, int);
 } while (0)
 
 // Contract: row-major arrays, zero padding, no kernel flip; anchor=(KH/2,KW/2).
-// The default suite uses positive odd kernel dimensions. Custom even sizes
-// are supported by the reference and expose the current kernel's known bug.
+// The suite includes odd/even kernels and empty images.
 enum Pattern { RandomGaussian, Constant, Impulse, Asymmetric, Zero };
 static const char* names[] = {"random-gaussian", "constant", "impulse", "asymmetric", "zero"};
 
@@ -123,7 +122,7 @@ int main(int argc, char** argv) {
     }
   } else {
     const int shapes[][4] = {
-      {1,1,1,1}, {1,1,3,3}, {3,5,3,3}, {31,7,3,3}, {32,8,3,3},
+      {0,5,3,3}, {5,0,3,3}, {3,5,2,2}, {17,9,2,4}, {1,1,1,1}, {1,1,3,3}, {3,5,3,3}, {31,7,3,3}, {32,8,3,3},
       {33,9,5,5}, {1,37,1,5}, {37,1,5,1}, {5,3,7,9},
       {65,17,3,5}, {17,65,5,3}, {127,129,7,7}, {256,257,3,3}
     };

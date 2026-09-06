@@ -9,7 +9,6 @@ __global__ void loss_kernel(const float *__restrict__ logits,    // (N, C)
   const int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= N)
     return;
-  float loss = 0;
   float max_logit = -INFINITY;
   for (int i = 0; i < C; ++i)
     max_logit = fmaxf(max_logit, logits[tid * C + i]);
@@ -43,12 +42,10 @@ extern "C" void solve(const float *logits,    // (N, C)
                       const int *true_labels, // (N,)
                       float *loss,            // (1,)
                       int N, int C) {
-  //
   if (N == 0)
     return;
   float *item_loss;
   cudaMalloc(&item_loss, N * sizeof(float));
-  //   cudaMemset(item_loss, 0, N * sizeof(float));
   cudaMemsetAsync(loss, 0, sizeof(float));
   loss_kernel<<<(N + 255) / 256, 256>>>(logits, true_labels, item_loss, N, C);
   sum_kernel<256><<<(N + 255) / 256, 256>>>(item_loss, loss, N, C);

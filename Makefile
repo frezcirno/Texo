@@ -1,129 +1,137 @@
-CUDA_HOME ?= /usr/local/cuda-11.7
-NVCC      ?= $(CUDA_HOME)/bin/nvcc
-CXX       ?= g++
-
+.DEFAULT_GOAL := all
+CUDA_HOME ?= /usr/local/cuda
+NVCC ?= $(CUDA_HOME)/bin/nvcc
 NVCC_ARCH ?= sm_80
 NVCCFLAGS ?= -O3 -std=c++14 -arch=$(NVCC_ARCH) -Xcompiler -Wall
-CXXFLAGS  ?= -O3 -std=c++14 -Wall -I$(CUDA_HOME)/include
-LDFLAGS   ?= -L$(CUDA_HOME)/lib64 -lcudart
+# Separate architectures to avoid accidentally running an old binary on T4.
+BIN_DIR ?= build/$(NVCC_ARCH)
+SRC_DIR := src
+TEST_DIR := tests
 
-SRC_DIR  := src
-TEST_DIR := test
-BIN_DIR  := build
+PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
+            conv3d_bench mat_vec_mul_bench gemm_bench cat_ce_test mse_test gauss_blur_test
+BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
+KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(wildcard src/*.cu))
+SUM_OBJECTS := $(BIN_DIR)/sum_manual.o $(BIN_DIR)/sum_cg.o $(BIN_DIR)/sum_cub.o
+SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
 
-REDUCE_BENCH := $(BIN_DIR)/reduce_bench
-MAX_BENCH    := $(BIN_DIR)/max_bench
-SOFTMAX_BENCH := $(BIN_DIR)/softmax_bench
-ATTENTION_BENCH := $(BIN_DIR)/attention_bench
-CONV2D_BENCH := $(BIN_DIR)/conv2d_bench
-CONV3D_BENCH := $(BIN_DIR)/conv3d_bench
-MAT_VEC_BENCH := $(BIN_DIR)/mat_vec_mul_bench
-GEMM_BENCH := $(BIN_DIR)/gemm_bench
-CAT_CE_TEST := $(BIN_DIR)/cat_ce_test
-MSE_TEST := $(BIN_DIR)/mse_test
-GAUSS_BLUR_TEST := $(BIN_DIR)/gauss_blur_test
+.PHONY: all help compile-kernels check check-full sanitize clean bench \
+        run-reduce run-max run-softmax run-attention run-conv2d run-conv3d \
+        run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare
 
+all: $(BINARIES)
+compile-kernels: $(KERNEL_OBJECTS)
 
-.PHONY: all clean run-reduce bench run-max run-softmax run-attention run-conv2d run-conv3d run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur
+$(BIN_DIR) $(BIN_DIR)/kernels:
+	mkdir -p $@
 
-all: $(REDUCE_BENCH) $(MAX_BENCH) $(SOFTMAX_BENCH) $(ATTENTION_BENCH) $(CONV2D_BENCH) $(CONV3D_BENCH) $(MAT_VEC_BENCH) $(GEMM_BENCH) $(CAT_CE_TEST) $(MSE_TEST) $(GAUSS_BLUR_TEST)
+$(BIN_DIR)/kernels/%.o: src/%.cu | $(BIN_DIR)/kernels
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
-$(BIN_DIR):
-	@mkdir -p $@
-
-REDUCE_SRCS := $(SRC_DIR)/sum_my.cu $(SRC_DIR)/sum_my_v2.cu $(SRC_DIR)/sum_stellar.cu $(SRC_DIR)/sum_cub.cu $(TEST_DIR)/sum.cpp
-MAX_SRCS    := $(SRC_DIR)/max.cu $(TEST_DIR)/max.cpp
-SOFTMAX_3_OBJ := $(BIN_DIR)/softmax_3kernel.o
-SOFTMAX_4_OBJ := $(BIN_DIR)/softmax_4kernel.o
-
-$(REDUCE_BENCH): $(REDUCE_SRCS) | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $(REDUCE_SRCS) -o $@
-
-$(MAX_BENCH): $(MAX_SRCS) | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $(MAX_SRCS) -o $@
-
-$(SOFTMAX_3_OBJ): $(SRC_DIR)/softmax_3kernel.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) \
-		-Dsolve=softmax_3kernel \
-		-Dwarp_max=softmax_3kernel_warp_max \
-		-Dblock_max=softmax_3kernel_block_max \
-		-Datomic_max_float=softmax_3kernel_atomic_max_float \
-		-Dmax_kernel=softmax_3kernel_max_kernel \
-		-Dexp_sum_kernel=softmax_3kernel_exp_sum_kernel \
-		-Dnormalize_kernel=softmax_3kernel_normalize_kernel \
-		-c $< -o $@
-
-$(SOFTMAX_4_OBJ): $(SRC_DIR)/softmax_4kernal.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) \
-		-Dsolve=softmax_4kernel \
-		-Dwarp_max=softmax_4kernel_warp_max \
-		-Dblock_max=softmax_4kernel_block_max \
-		-Datomic_max_float=softmax_4kernel_atomic_max_float \
-		-Dmax_kernel=softmax_4kernel_max_kernel \
-		-Dexp_kernel=softmax_4kernel_exp_kernel \
-		-Dsum_kernel=softmax_4kernel_sum_kernel \
-		-Dnormalize_kernel=softmax_4kernel_normalize_kernel \
-		-c $< -o $@
-
-$(SOFTMAX_BENCH): $(SOFTMAX_3_OBJ) $(SOFTMAX_4_OBJ) $(TEST_DIR)/softmax.cpp | $(BIN_DIR)
+$(BIN_DIR)/sum_manual.o: src/sum.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -Dsolve=reduce_manual -c $< -o $@
+$(BIN_DIR)/sum_cg.o: src/sum_cg.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -Dsolve=reduce_cg -c $< -o $@
+$(BIN_DIR)/sum_cub.o: src/sum_cub.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
+$(BIN_DIR)/reduce_bench: tests/sum.cpp $(SUM_OBJECTS) | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 
-$(ATTENTION_BENCH): $(SRC_DIR)/attention.cu $(TEST_DIR)/attention.cpp | $(BIN_DIR)
+# Compile each standalone solve under a unique name for comparisons.
+$(BIN_DIR)/softmax_%kernel.o: src/softmax_%kernel.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -Dsolve=softmax_$*kernel \
+	  -Dwarp_max=softmax_$*kernel_warp_max -Dblock_max=softmax_$*kernel_block_max \
+	  -Datomic_max_float=softmax_$*kernel_atomic_max_float \
+	  -Dmax_kernel=softmax_$*kernel_max_kernel -Dexp_kernel=softmax_$*kernel_exp_kernel \
+	  -Dexp_sum_kernel=softmax_$*kernel_exp_sum_kernel \
+	  -Dsum_kernel=softmax_$*kernel_sum_kernel \
+	  -Dnormalize_kernel=softmax_$*kernel_normalize_kernel -c $< -o $@
+$(BIN_DIR)/softmax_bench: tests/softmax.cpp $(SOFTMAX_OBJECTS) | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 
-$(CONV2D_BENCH): $(SRC_DIR)/conv2d.cu $(TEST_DIR)/conv2d.cpp | $(BIN_DIR)
+$(BIN_DIR)/max_bench: tests/max.cpp src/max.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
-
-$(CONV3D_BENCH): $(SRC_DIR)/conv3d.cu $(TEST_DIR)/conv3d.cpp | $(BIN_DIR)
+$(BIN_DIR)/attention_bench: tests/attention.cpp src/mha.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
-
-$(MAT_VEC_BENCH): $(TEST_DIR)/mat_vec_mul.cu $(SRC_DIR)/mat-vec-mul.cu | $(BIN_DIR)
+$(BIN_DIR)/conv2d_bench: tests/conv2d.cpp src/conv2d.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/conv3d_bench: tests/conv3d.cpp src/conv3d.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+# This test includes the implementation to instantiate both kernel variants.
+$(BIN_DIR)/mat_vec_mul_bench: tests/mat_vec_mul.cu src/mat_vec_mul.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $< -o $@
+$(BIN_DIR)/gemm_bench: tests/gemm.cu src/gemm.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/cat_ce_test: tests/cat_ce.cpp src/cat_ce.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/mse_test: tests/mse.cpp src/mse.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/gauss_blur_test: tests/gauss_blur.cpp src/gauss_blur.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/reduce_max_compare: benchmarks/reduce_max.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $< -o $@
 
-run-mat-vec: $(MAT_VEC_BENCH)
-	$(MAT_VEC_BENCH)
+run-reduce bench: $(BIN_DIR)/reduce_bench
+	$<
+run-max: $(BIN_DIR)/max_bench
+	$<
+run-softmax: $(BIN_DIR)/softmax_bench
+	$<
+run-attention: $(BIN_DIR)/attention_bench
+	$<
+run-conv2d: $(BIN_DIR)/conv2d_bench
+	$<
+run-conv3d: $(BIN_DIR)/conv3d_bench
+	$<
+run-mat-vec: $(BIN_DIR)/mat_vec_mul_bench
+	$<
+run-gemm: $(BIN_DIR)/gemm_bench
+	$<
+run-cat-ce: $(BIN_DIR)/cat_ce_test
+	$<
+run-mse: $(BIN_DIR)/mse_test
+	$<
+run-gauss-blur: $(BIN_DIR)/gauss_blur_test
+	$<
+run-max-compare: $(BIN_DIR)/reduce_max_compare
+	$<
 
-$(GEMM_BENCH): $(TEST_DIR)/gemm.cu $(SRC_DIR)/gemm.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
+# Small reproducible GPU checks. Every executable returns nonzero on failure.
+check: all
+	$(BIN_DIR)/reduce_bench 1025 2
+	$(BIN_DIR)/max_bench 1025 2
+	$(BIN_DIR)/softmax_bench 1025 2 1
+	$(BIN_DIR)/attention_bench 17 33 16 2 1
+	$(BIN_DIR)/conv2d_bench 17 35 3 5 2 1
+	$(BIN_DIR)/conv3d_bench 9 11 13 3 3 3 2 1
+	$(BIN_DIR)/mat_vec_mul_bench --check-only
+	$(BIN_DIR)/gemm_bench --check-only
+	$(BIN_DIR)/cat_ce_test
+	$(BIN_DIR)/mse_test 1025
+	$(BIN_DIR)/gauss_blur_test
 
-run-gemm: $(GEMM_BENCH)
-	$(GEMM_BENCH)
+# Includes the 50-million-element MSE precision regression (~400 MB GPU inputs).
+check-full: check
+	$(BIN_DIR)/mse_test
 
-$(CAT_CE_TEST): $(TEST_DIR)/cat_ce.cpp $(SRC_DIR)/cat_ce.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
+COMPUTE_SANITIZER ?= compute-sanitizer
+sanitize: all
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_bench 17 33 19 0
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gauss_blur_test
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/mse_test 1025
+	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
+	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/mse_test 257
 
-run-cat-ce: $(CAT_CE_TEST)
-	$(CAT_CE_TEST)
-
-$(MSE_TEST): $(TEST_DIR)/mse.cpp $(SRC_DIR)/mse.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
-
-run-mse: $(MSE_TEST)
-	$(MSE_TEST)
-
-$(GAUSS_BLUR_TEST): $(TEST_DIR)/gauss_blur.cpp $(SRC_DIR)/gauss_blur.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
-
-run-gauss-blur: $(GAUSS_BLUR_TEST)
-	$(GAUSS_BLUR_TEST)
-
-run-reduce bench: $(REDUCE_BENCH)
-	$(REDUCE_BENCH)
-
-run-max: $(MAX_BENCH)
-	$(MAX_BENCH)
-
-run-softmax: $(SOFTMAX_BENCH)
-	$(SOFTMAX_BENCH)
-
-run-attention: $(ATTENTION_BENCH)
-	$(ATTENTION_BENCH)
-
-run-conv2d: $(CONV2D_BENCH)
-	$(CONV2D_BENCH)
-
-run-conv3d: $(CONV3D_BENCH)
-	$(CONV3D_BENCH)
+help:
+	@echo 'make [-j2] [NVCC=/path/to/nvcc] [NVCC_ARCH=sm_80|sm_75]'
+	@echo 'all             Build tests and benchmarks (no GPU needed)'
+	@echo 'compile-kernels Compile every src/*.cu independently'
+	@echo 'check           Run small GPU correctness checks'
+	@echo 'check-full      Also run large MSE precision regressions'
+	@echo 'sanitize        Run selected memory/synchronization checks'
+	@echo 'run-<operator>  Run one test/benchmark with default arguments'
+	@echo 'clean           Remove current architecture build directory'
 
 clean:
 	rm -rf $(BIN_DIR)

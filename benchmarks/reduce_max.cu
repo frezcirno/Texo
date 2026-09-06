@@ -1,12 +1,12 @@
-// reduce_max_bench.cu
+// Standalone maximum-reduction comparison.
 // 对比两种 CUDA max reduction:
 //   Kernel 1: pure tree reduction — 每个 thread 处理 1 个元素，gridDim = ceil(N / BLOCK_SIZE)
 //   Kernel 2: serial-then-tree (grid-stride loop) — 每个 thread 在寄存器里串行 reduce 多个元素，
 //             然后做 block-level tree reduce，gridDim 固定为 SM 数的小倍数
 //
-// 编译:  nvcc -O3 -arch=sm_80 reduce_max_bench.cu -o reduce_max_bench
+// Build from the repository root: make build/sm_80/reduce_max_compare
 //        (根据你的卡调 -arch: sm_80=A100, sm_89=4090, sm_90=H100)
-// 运行:  ./reduce_max_bench [N]   默认 N = 1 << 26 (~64M floats, 256 MB)
+// Run: build/sm_80/reduce_max_compare [N]; default N = 1 << 26 (~256 MB)
 
 #include <cuda_runtime.h>
 #include <cstdio>

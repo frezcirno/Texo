@@ -78,6 +78,6 @@ extern "C" void solve(const float *A, // (M, N)
   if (M <= 0) {
     return;
   }
-  //   mat_vec_mul<256><<<M, 256>>>(A, x, y, M, N, nnz);
+  // The test also benchmarks mat_vec_mul<256> (one block per row).
   mat_vec_mul_warp<<<1 + (M - 1) / 8, 256>>>(A, x, y, M, N);
 }

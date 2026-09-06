@@ -5,9 +5,10 @@
 namespace cg = cooperative_groups;
 
 template <int BLOCK_SIZE>
-__global__ void reduce_cg_kernel(const float *__restrict__ input, 
+__global__ void reduce_cg_kernel(const float *__restrict__ input,
                                  double *__restrict__ accumulator, int N) {
-  cg::thread_block block = cg::this_thread_block();
+  __shared__ cg::block_tile_memory<BLOCK_SIZE> scratch;
+  cg::thread_block block = cg::this_thread_block(scratch);
 
   cg::thread_block_tile<BLOCK_SIZE> tile =
       cg::tiled_partition<BLOCK_SIZE>(block);
