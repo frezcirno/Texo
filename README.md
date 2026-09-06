@@ -48,6 +48,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | --- | --- | --- |
 | Sum reduction: manual, Cooperative Groups, CUB | `src/sum*.cu` | `make run-reduce` |
 | Maximum reduction | `src/max.cu` | `make run-max` |
+| Top-k selection in descending order | `src/top_k.cu` | `make run-top-k` |
 | Softmax: three- and four-kernel variants | `src/softmax_*kernel.cu` | `make run-softmax` |
 | Scaled dot-product attention | `src/mha.cu` | `make run-attention` |
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
@@ -60,8 +61,8 @@ after changing compiler flags or toolkit while retaining the same build director
 
 `src/mha.cu` currently implements a single attention operation without a batch or
 head dimension; the filename does not imply a complete multi-head attention layer.
-The unfinished top-k entry point is kept in `experimental/top_k.cu` and is excluded
-from the default build. A standalone reduction comparison is in
+The older top-k placeholder in `experimental/top_k.cu` is excluded from the default
+build; the working implementation is in `src/top_k.cu`. A standalone reduction comparison is in
 `benchmarks/reduce_max.cu` (`make run-max-compare`).
 
 See [operator contracts and limitations](docs/operators.md) before reusing a kernel.
@@ -73,6 +74,7 @@ build/sm_80/mat_vec_mul_bench 4096 1024 100   # M N repeats
 build/sm_80/gemm_bench 17 33 19 20           # M N K repeats
 build/sm_80/cat_ce_test 1025 65              # samples classes
 build/sm_80/mse_test 50000000                # number of elements
+build/sm_80/top_k_test 50000000 100          # N k; includes wrapper timing
 build/sm_80/gauss_blur_test 17 35 3 5        # image rows/cols, kernel rows/cols
 ```
 

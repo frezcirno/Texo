@@ -9,7 +9,7 @@ SRC_DIR := src
 TEST_DIR := tests
 
 PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
-            conv3d_bench mat_vec_mul_bench gemm_bench cat_ce_test mse_test gauss_blur_test
+            conv3d_bench mat_vec_mul_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
 KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(wildcard src/*.cu))
 SUM_OBJECTS := $(BIN_DIR)/sum_manual.o $(BIN_DIR)/sum_cg.o $(BIN_DIR)/sum_cub.o
@@ -17,7 +17,7 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
 
 .PHONY: all help compile-kernels check check-full sanitize clean bench \
         run-reduce run-max run-softmax run-attention run-conv2d run-conv3d \
-        run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare
+        run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k
 
 all: $(BINARIES)
 compile-kernels: $(KERNEL_OBJECTS)
@@ -68,6 +68,8 @@ $(BIN_DIR)/mse_test: tests/mse.cpp src/mse.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gauss_blur_test: tests/gauss_blur.cpp src/gauss_blur.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/top_k_test: tests/top_k.cpp src/top_k.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/reduce_max_compare: benchmarks/reduce_max.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $< -o $@
 
@@ -95,6 +97,8 @@ run-gauss-blur: $(BIN_DIR)/gauss_blur_test
 	$<
 run-max-compare: $(BIN_DIR)/reduce_max_compare
 	$<
+run-top-k: $(BIN_DIR)/top_k_test
+	$<
 
 # Small reproducible GPU checks. Every executable returns nonzero on failure.
 check: all
@@ -109,10 +113,12 @@ check: all
 	$(BIN_DIR)/cat_ce_test
 	$(BIN_DIR)/mse_test 1025
 	$(BIN_DIR)/gauss_blur_test
+	$(BIN_DIR)/top_k_test
 
-# Includes the 50-million-element MSE precision regression (~400 MB GPU inputs).
+# Large reduction regressions, including the LeetGPU top-k performance shape.
 check-full: check
 	$(BIN_DIR)/mse_test
+	$(BIN_DIR)/top_k_test 50000000 100
 
 COMPUTE_SANITIZER ?= compute-sanitizer
 sanitize: all
@@ -120,15 +126,17 @@ sanitize: all
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gauss_blur_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/mse_test 1025
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/mse_test 257
+	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049
 
 help:
 	@echo 'make [-j2] [NVCC=/path/to/nvcc] [NVCC_ARCH=sm_80|sm_75]'
 	@echo 'all             Build tests and benchmarks (no GPU needed)'
 	@echo 'compile-kernels Compile every src/*.cu independently'
 	@echo 'check           Run small GPU correctness checks'
-	@echo 'check-full      Also run large MSE precision regressions'
+	@echo 'check-full      Also run large MSE and top-k regressions'
 	@echo 'sanitize        Run selected memory/synchronization checks'
 	@echo 'run-<operator>  Run one test/benchmark with default arguments'
 	@echo 'clean           Remove current architecture build directory'

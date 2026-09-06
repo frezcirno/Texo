@@ -22,6 +22,12 @@ before consuming outputs on the CPU.
   for sequential calls on one device; it is not thread-safe or device-switch-safe.
 - `max.cu`: float maximum; vectorized input requires 16-byte alignment. The empty
   reduction produces negative infinity. NaN behavior is not specified by the tests.
+- `top_k.cu`: float input `[N]` to descending output `[k]`, preserving duplicates
+  and input storage; `1 <= k <= N <= 100000000`, no NaNs. Four byte-wise radix
+  selection passes find the kth value, then a fifth pass collects larger values.
+  Only the k output values are sorted, using bitonic tiles and merges for k > 1024.
+  Uses CUDA intrinsics supported by sm_75/sm_80, without CUB or Thrust. Temporary
+  storage is constant for k <= 1024 and O(k) for larger outputs.
 - `prefix_sum.cu`: inclusive float scan, using recursive block sums. Compile-tested;
   no maintained runtime test target yet.
 - `dot.cu`: float dot product; both inputs require 16-byte alignment for `float4`

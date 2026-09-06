@@ -17,10 +17,12 @@ No kernels from different standalone operators are linked into one library.
 partial blocks, multiple blocks, finite outputs, and numerical agreement according
 to each executable's tolerances. It does not run the unimplemented top-k exercise.
 `check-full` adds the default MSE suite, including 50 million inputs to catch the
-rounding error seen with repeated float atomic additions.
+rounding error seen with repeated float atomic additions, plus top-k selection with
+N=50000000 and k=100. The top-k suite compares against a CPU partial sort and reports
+the best of two warm wrapper wall times, including allocation and freeing.
 
-`sanitize` runs memory checks on GEMM, blur, categorical cross entropy and MSE,
-and synchronization checks on the two Cooperative Groups loss reductions. It is a
+`sanitize` runs memory checks on GEMM, blur, categorical cross entropy, MSE and top-k,
+and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.
 
 ## Architecture and device selection
