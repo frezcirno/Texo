@@ -48,6 +48,10 @@ before consuming outputs on the CPU.
   Inputs and output use FP16; products and accumulation use FP32. `C` is read only
   when `beta != 0`. Empty output dimensions are a no-op. There is no tiling or
   Tensor Core implementation yet.
+- `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]
+  and C[BATCH,M,N], using contiguous row-major storage without broadcasting or
+  transposes. The current kernel adds into C; callers must clear C before each
+  multiplication. Tests use positive dimensions and CPU double references.
 - `softmax_3kernel.cu` / `softmax_4kernel.cu`: softmax over one float vector, with
   maximum subtraction for stability. Vectorized paths require 16-byte alignment.
 - `mha.cu`: `softmax(Q * K^T / sqrt(d)) * V`, with `Q[M,d]`, `K[N,d]`, `V[N,d]`.
@@ -80,8 +84,13 @@ before consuming outputs on the CPU.
 - `relu.cu`: `max(x, 0)` for N float elements.
 - `leaky_relu.cu`: `x` for positive inputs and `0.01*x` otherwise.
 - `silu.cu`: `x * sigmoid(x)` for N float elements.
+- `sigmoid.cu`: logistic sigmoid for N float elements.
 - `swiglu.cu`: even-length input N, split into contiguous halves x and gate;
   returns N/2 values `silu(x[i]) * gate[i]`.
+- `geglu.cu`: even-length input N, split into contiguous halves x and gate;
+  returns N/2 values `x[i] * gelu(gate[i])`, using the erf form of GELU.
+- `rgb2grayscale.cu`: interleaved float RGB input `[height,width,3]` produces
+  `[height,width]` values `0.299*R + 0.587*G + 0.114*B`.
 - `clip.cu`: clip N finite float values to `[lo,hi]`, where `lo <= hi`.
 - `reverse.cu`: reverses N float elements in place. Reversing twice restores input.
 - `interleave.cu`: two float inputs A[N], B[N] produce 2*N outputs in the order

@@ -11,7 +11,7 @@ TEST_DIR := tests
 PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
             conv3d_bench mat_vec_mul_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test sigmoid_test geglu_test
-BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test rgb2grayscale_test
+BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test rgb2grayscale_test batched_mm_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS)
 BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
 KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(wildcard src/*.cu))
@@ -23,7 +23,7 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k \
         run-relu run-leaky-relu run-silu run-swiglu run-clip run-mat-add \
         run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
-        run-sigmoid run-geglu run-rgb2grayscale
+        run-sigmoid run-geglu run-rgb2grayscale run-batched-mm
 
 all: $(BINARIES)
 compile-kernels: $(KERNEL_OBJECTS)
@@ -147,6 +147,8 @@ run-geglu: $(BIN_DIR)/geglu_test
 	$<
 run-rgb2grayscale: $(BIN_DIR)/rgb2grayscale_test
 	$<
+run-batched-mm: $(BIN_DIR)/batched_mm_test
+	$<
 
 # Small reproducible GPU checks. Every executable returns nonzero on failure.
 check: all
@@ -176,6 +178,7 @@ check: all
 	$(BIN_DIR)/sigmoid_test
 	$(BIN_DIR)/geglu_test
 	$(BIN_DIR)/rgb2grayscale_test
+	$(BIN_DIR)/batched_mm_test
 
 # Large reduction regressions, including the LeetGPU top-k performance shape.
 check-full: check
@@ -190,6 +193,7 @@ sanitize: all
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/mse_test 1025
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/interleave_test
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/batched_mm_test
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/mse_test 257
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049

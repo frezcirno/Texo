@@ -22,8 +22,8 @@ N=50000000 and k=100. The top-k suite compares against a CPU partial sort and re
 the best of two warm wrapper wall times, including allocation and freeing.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
-and hash tests also run in `make check`. Each operator has its own executable;
-the five elementwise executables share `tests/elementwise.cpp`. Their small helper
+hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
+executable; the seven elementwise executables share `tests/elementwise.cpp`. Their small helper
 `tests/test_utils.h` checks CUDA errors, CPU references, output guards, and repeated
 calls, clearing output before each invocation. Input storage is checked for changes;
 reversal instead verifies the in-place result and restoration after a second call.
@@ -31,11 +31,20 @@ Guard placement preserves 16-byte output alignment. Tests use positive sizes aro
 warp/block boundaries and non-multiples of block sizes.
 
 Copy, addition, reversal, interleave, ReLU, clip and hashes use exact comparisons.
-Leaky ReLU, SiLU and SwiGLU use CPU double references with atol=1e-6 and rtol=3e-6;
-1D cross-correlation uses atol=1e-4 and rtol=1e-5. Clip tests include interval
+Leaky ReLU, sigmoid, SiLU and SwiGLU use CPU double references with atol=1e-6 and
+rtol=3e-6; GEGLU uses atol=5e-6 and rtol=3e-6 to account for float erf cancellation.
+1D cross-correlation uses atol=1e-4 and rtol=1e-5; RGB-to-grayscale uses atol=1e-7
+and rtol=1e-6. Clip tests include interval
 boundaries and equal bounds; hashes include signed bit patterns and multiple rounds.
 
-`sanitize` runs memory checks on GEMM, blur, categorical cross entropy, MSE, top-k and interleave,
+`batched_mm_test` checks rectangular matrices, distinct data for each batch,
+partial blocks in all three output dimensions, identity and zero matrices, and a
+nonzero final reduction element. It compares with CPU double accumulation using
+atol=1e-5 and rtol=1e-5, clears C before each call, and checks input storage and
+output guards. Run it with `make run-batched-mm`; it also runs in `make check`.
+
+`sanitize` runs memory checks on GEMM, batched matrix multiplication, blur,
+categorical cross entropy, MSE, top-k and interleave,
 and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.
 
