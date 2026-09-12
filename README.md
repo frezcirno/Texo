@@ -11,7 +11,7 @@ operator separately; the Makefile renames entry points when comparing variants.
 ## Requirements
 
 - Linux, GNU Make, and a C++ compiler supported by the CUDA Toolkit.
-- CUDA Toolkit 12.6 is the development baseline. CUB and Cooperative Groups come
+- CUDA Toolkit 12.6 is the development baseline. cuBLAS, CUB, and Cooperative Groups come
   with the toolkit; no external C++ dependencies are vendored.
 - An NVIDIA GPU and compatible driver to run tests. Compilation alone needs no GPU.
 - `compute-sanitizer` for the optional memory and synchronization checks.
@@ -61,7 +61,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
 | Valid 1D cross-correlation | `src/conv1d.cu` | `make run-conv1d` |
 | Matrix-vector multiplication | `src/mat_vec_mul.cu` | `make run-mat-vec` |
-| FP16 GEMM with FP32 accumulation | `src/gemm.cu` | `make run-gemm` |
+| FP16 GEMM: scalar, tiled, WMMA, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
 | Batched FP32 matrix multiplication | `src/batched_mm.cu` | `make run-batched-mm` |
 | Mean categorical cross entropy | `src/cat_ce.cu` | `make run-cat-ce` |
 | Mean squared error with FP64 reduction | `src/mse.cu` | `make run-mse` |
@@ -81,11 +81,31 @@ See [operator contracts and limitations](docs/operators.md) before reusing a ker
 ```bash
 build/sm_80/mat_vec_mul_bench 4096 1024 100   # M N repeats
 build/sm_80/gemm_bench 17 33 19 20           # M N K repeats
+build/sm_80/gemm_cublas_bench 1024 1024 1024 100
 build/sm_80/cat_ce_test 1025 65              # samples classes
 build/sm_80/mse_test 50000000                # number of elements
 build/sm_80/top_k_test 50000000 100          # N k; includes wrapper timing
 build/sm_80/gauss_blur_test 17 35 3 5        # image rows/cols, kernel rows/cols
 ```
+
+Compare all four GEMM implementations on the same selected GPU:
+
+```bash
+CUDA_VISIBLE_DEVICES=3 make check-gemm
+CUDA_VISIBLE_DEVICES=3 make run-gemm-compare  # default: M=N=K=1024, 100 repeats
+CUDA_VISIBLE_DEVICES=3 make run-gemm-compare GEMM_ARGS="256 2048 512 100"
+```
+
+All four use the same CPU reference, FP16 inputs/output, FP32 accumulation, and
+row-major `C = alpha * A * B + beta * C` contract. The cuBLAS baseline links with
+`-lcublas` and uses `cublasGemmEx` with FP32 reductions; Tensor Core algorithm
+selection is left to cuBLAS. Its handle is reused on one selected device and the
+default stream; initialization occurs before timing.
+
+GEMM timing uses aligned buffers, five warmup calls, and the median of five
+CUDA-event batches. It excludes allocation, copies, and CPU validation, but includes
+any host submission gaps between GPU operations. Output guards preserve 256-byte
+alignment; a separate correctness case also tests an unaligned output pointer.
 
 Tests return nonzero on numerical mismatches or CUDA errors. The newer suites
 check CPU references, partial blocks, repeated calls, and output guards. Floating

@@ -68,6 +68,11 @@ or T4 runtime validation.
 - Matrix-vector and GEMM benchmarks warm up and report the median of five batches
   of repeated launches. They reuse input buffers and exclude host/device copies.
   GEMM timing uses `beta=0` to prevent repeated accumulation into C.
+  `make check-gemm` validates scalar, tiled, WMMA, and cuBLAS variants;
+  `make run-gemm-compare GEMM_ARGS="1024 1024 1024 100"` compares their timings.
+  All use 256-byte-aligned benchmark buffers, with output guards and a separate
+  unaligned correctness case. cuBLAS handle creation happens before timing.
+  CUDA-event batches include any host submission gaps between GPU operations.
 - Attention, softmax, and convolution benchmarks also report wall-clock timings.
   A wrapper may include allocation, deallocation, or synchronization; read the
   printed fields and wrapper before comparing with a kernel-only number.

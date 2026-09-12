@@ -23,9 +23,12 @@ extern "C" void solve(const half*, const half*, half*, int, int, int, float, flo
 // Reference uses the actual FP16 inputs, double accumulation, then FP16 output.
 // Tolerance is explicit: abs_error <= 0.01 + 0.01 * abs(reference).
 static bool run_case(const char* name, int m, int n, int k,
-                     float alpha, float beta, bool ones, int repeats) {
+                     float alpha, float beta, bool ones, int repeats,
+                     size_t c_offset = 128) {
   size_t na = size_t(m) * k, nb = size_t(k) * n, nc = size_t(m) * n;
-  std::vector<half> a(na), b(nb), initial(nc), actual(nc + 2);
+  // A 256-byte prefix preserves cudaMalloc alignment while guarding C.
+  // Keep a separate offset=1 correctness case for unaligned output buffers.
+  std::vector<half> a(na), b(nb), initial(nc), actual(c_offset + nc + 1);
   std::vector<double> product(nc, 0.0);
   std::mt19937 rng(12345);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -41,19 +44,19 @@ static bool run_case(const char* name, int m, int n, int k,
   half *da, *db, *dc;
   CUDA_CHECK(cudaMalloc(&da, std::max(size_t(1), na) * sizeof(half)));
   CUDA_CHECK(cudaMalloc(&db, std::max(size_t(1), nb) * sizeof(half)));
-  CUDA_CHECK(cudaMalloc(&dc, (nc + 2) * sizeof(half)));
+  CUDA_CHECK(cudaMalloc(&dc, actual.size() * sizeof(half)));
   if (na) CUDA_CHECK(cudaMemcpy(da, a.data(), na * sizeof(half), cudaMemcpyHostToDevice));
   if (nb) CUDA_CHECK(cudaMemcpy(db, b.data(), nb * sizeof(half), cudaMemcpyHostToDevice));
   std::fill(actual.begin(), actual.end(), __float2half(123.0f));
-  std::copy(initial.begin(), initial.end(), actual.begin() + 1);
-  CUDA_CHECK(cudaMemcpy(dc, actual.data(), (nc + 2) * sizeof(half), cudaMemcpyHostToDevice));
+  std::copy(initial.begin(), initial.end(), actual.begin() + c_offset);
+  CUDA_CHECK(cudaMemcpy(dc, actual.data(), actual.size() * sizeof(half), cudaMemcpyHostToDevice));
 
   bool passed = true;
   double max_error = 0;
   std::vector<half> previous = initial;
   // Two calls test overwrite for beta=0, and use of existing C for beta!=0.
   for (int invocation = 0; invocation < 2; ++invocation) {
-    solve(da, db, dc + 1, m, n, k, alpha, beta);
+    solve(da, db, dc + c_offset, m, n, k, alpha, beta);
     cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) {
       std::printf("  launch failed: %s\n", cudaGetErrorString(error));
@@ -61,15 +64,17 @@ static bool run_case(const char* name, int m, int n, int k,
       break;
     }
     CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemcpy(actual.data(), dc, (nc + 2) * sizeof(half), cudaMemcpyDeviceToHost));
-    if (__half2float(actual.front()) != 123.0f || __half2float(actual.back()) != 123.0f) {
+    CUDA_CHECK(cudaMemcpy(actual.data(), dc, actual.size() * sizeof(half), cudaMemcpyDeviceToHost));
+    bool prefix_ok = std::all_of(actual.begin(), actual.begin() + c_offset,
+        [](half value) { return __half2float(value) == 123.0f; });
+    if (!prefix_ok || __half2float(actual.back()) != 123.0f) {
       std::printf("  output guard overwritten\n");
       passed = false;
     }
     size_t bad = 0;
     for (size_t i = 0; i < nc; ++i) {
       double ref = __half2float(__float2half(float(alpha * product[i] + beta * __half2float(previous[i]))));
-      double got = __half2float(actual[i + 1]);
+      double got = __half2float(actual[i + c_offset]);
       double diff = std::abs(got - ref);
       max_error = std::max(max_error, diff);
       if (!std::isfinite(got) || diff > 0.01 + 0.01 * std::abs(ref)) {
@@ -77,7 +82,7 @@ static bool run_case(const char* name, int m, int n, int k,
           std::printf("  call=%d row=%zu col=%zu got=%g expected=%g\n", invocation + 1, i / n, i % n, got, ref);
       }
       // Compare each call against its actual input C, isolating new errors.
-      previous[i] = actual[i + 1];
+      previous[i] = actual[i + c_offset];
     }
     if (bad) {
       std::printf("  mismatches=%zu/%zu\n", bad, nc);
@@ -89,7 +94,7 @@ static bool run_case(const char* name, int m, int n, int k,
 
   if (passed && repeats > 0 && nc) {
     // Benchmark beta=0 separately, so repeated launches do not grow C.
-    for (int i = 0; i < 5; ++i) solve(da, db, dc + 1, m, n, k, alpha, 0.0f);
+    for (int i = 0; i < 5; ++i) solve(da, db, dc + c_offset, m, n, k, alpha, 0.0f);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     cudaEvent_t start, stop;
@@ -98,7 +103,7 @@ static bool run_case(const char* name, int m, int n, int k,
     std::vector<float> times;
     for (int batch = 0; batch < 5; ++batch) {
       CUDA_CHECK(cudaEventRecord(start));
-      for (int i = 0; i < repeats; ++i) solve(da, db, dc + 1, m, n, k, alpha, 0.0f);
+      for (int i = 0; i < repeats; ++i) solve(da, db, dc + c_offset, m, n, k, alpha, 0.0f);
       CUDA_CHECK(cudaGetLastError());
       CUDA_CHECK(cudaEventRecord(stop));
       CUDA_CHECK(cudaEventSynchronize(stop));
@@ -128,6 +133,7 @@ int main(int argc, char** argv) {
   CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
   std::printf("GPU: %s\nFP16 inputs/output, CPU double reference; atol=0.01 rtol=0.01\n", prop.name);
   std::puts("Timing: warmed inputs, beta=0, median of 5 batches; no allocation/copies included.");
+  std::puts("Benchmark buffers are 256-byte aligned; includes host submission gaps between kernels.");
   bool passed = true;
   if (argc >= 4) {
     try {
@@ -150,6 +156,7 @@ int main(int argc, char** argv) {
     passed &= run_case("scalar", 1, 1, 1, 1, 0, false, 0);
     passed &= run_case("tile-aligned", 16, 16, 16, 1, 0, false, 0);
     passed &= run_case("rectangular-tail", 17, 33, 19, 1, 0, false, 0);
+    passed &= run_case("unaligned-output", 17, 33, 19, 1, 0, false, 0, 1);
     passed &= run_case("single-row", 1, 35, 31, 0.5f, 0.25f, false, 0);
     passed &= run_case("single-column", 35, 1, 33, -1, 1, false, 0);
     passed &= run_case("alpha-beta", 19, 7, 65, -0.75f, 0.5f, false, 0);

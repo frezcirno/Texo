@@ -44,10 +44,14 @@ before consuming outputs on the CPU.
 - `mat_vec_mul.cu`: `A[M,N] * x[N] -> y[M]`, float. A warp per row is the default;
   the test also compares a block per row and different block sizes. `nnz` is a
   retained, unused parameter; this is dense storage, not CSR/COO sparse storage.
-- `gemm.cu`: `C = alpha * A * B + beta * C`, with `A[M,K]`, `B[K,N]`, `C[M,N]`.
-  Inputs and output use FP16; products and accumulation use FP32. `C` is read only
-  when `beta != 0`. Empty output dimensions are a no-op. There is no tiling or
-  Tensor Core implementation yet.
+- `gemm.cu`, `gemm_tile.cu`, `gemm_wmma.cu`, `gemm_cublas.cu`:
+  row-major `C = alpha * A * B + beta * C`, with `A[M,K]`, `B[K,N]`, `C[M,N]`.
+  Inputs and output use FP16 with FP32 accumulation. `C` is read only when
+  `beta != 0`. Empty output dimensions are a no-op; K=0 scales C by beta.
+  Variants use scalar arithmetic, shared-memory tiling, WMMA, and cuBLAS,
+  respectively. The cuBLAS baseline uses `cublasGemmEx`, disallows reduced-precision
+  reductions, and reuses a handle on one selected device per host thread with the
+  default stream. It requires linking with `-lcublas`.
 - `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]
   and C[BATCH,M,N], using contiguous row-major storage without broadcasting or
   transposes. The current kernel adds into C; callers must clear C before each

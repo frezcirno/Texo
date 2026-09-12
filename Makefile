@@ -13,6 +13,9 @@ PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test sigmoid_test geglu_test
 BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test rgb2grayscale_test batched_mm_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS)
+GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_cublas_bench
+PROGRAMS += $(filter-out gemm_bench,$(GEMM_BENCHES))
+GEMM_ARGS ?= 1024 1024 1024 100
 BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
 KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(wildcard src/*.cu))
 SUM_OBJECTS := $(BIN_DIR)/sum_manual.o $(BIN_DIR)/sum_cg.o $(BIN_DIR)/sum_cub.o
@@ -23,7 +26,8 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k \
         run-relu run-leaky-relu run-silu run-swiglu run-clip run-mat-add \
         run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
-        run-sigmoid run-geglu run-rgb2grayscale run-batched-mm
+        run-sigmoid run-geglu run-rgb2grayscale run-batched-mm \
+        run-gemm-tile run-gemm-wmma run-gemm-cublas run-gemm-compare check-gemm
 
 all: $(BINARIES)
 compile-kernels: $(KERNEL_OBJECTS)
@@ -68,6 +72,12 @@ $(BIN_DIR)/mat_vec_mul_bench: tests/mat_vec_mul.cu src/mat_vec_mul.cu | $(BIN_DI
 	$(NVCC) $(NVCCFLAGS) $< -o $@
 $(BIN_DIR)/gemm_bench: tests/gemm.cu src/gemm.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/gemm_tile_bench: tests/gemm.cu src/gemm_tile.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/gemm_wmma_bench: tests/gemm.cu src/gemm_wmma.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/gemm_cublas_bench: tests/gemm.cu src/gemm_cublas.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@ -lcublas
 $(BIN_DIR)/cat_ce_test: tests/cat_ce.cpp src/cat_ce.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/mse_test: tests/mse.cpp src/mse.cu | $(BIN_DIR)
@@ -109,6 +119,20 @@ run-mat-vec: $(BIN_DIR)/mat_vec_mul_bench
 	$<
 run-gemm: $(BIN_DIR)/gemm_bench
 	$<
+run-gemm-tile: $(BIN_DIR)/gemm_tile_bench
+	$<
+run-gemm-wmma: $(BIN_DIR)/gemm_wmma_bench
+	$<
+run-gemm-cublas: $(BIN_DIR)/gemm_cublas_bench
+	$<
+run-gemm-compare: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES))
+	@set -e; for binary in $^; do \
+	  echo "$$binary"; "$$binary" $(GEMM_ARGS); \
+	done
+check-gemm: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES))
+	@set -e; for binary in $^; do \
+	  echo "$$binary"; "$$binary" --check-only; \
+	done
 run-cat-ce: $(BIN_DIR)/cat_ce_test
 	$<
 run-mse: $(BIN_DIR)/mse_test
@@ -160,6 +184,9 @@ check: all
 	$(BIN_DIR)/conv3d_bench 9 11 13 3 3 3 2 1
 	$(BIN_DIR)/mat_vec_mul_bench --check-only
 	$(BIN_DIR)/gemm_bench --check-only
+	$(BIN_DIR)/gemm_tile_bench --check-only
+	$(BIN_DIR)/gemm_wmma_bench --check-only
+	$(BIN_DIR)/gemm_cublas_bench --check-only
 	$(BIN_DIR)/cat_ce_test
 	$(BIN_DIR)/mse_test 1025
 	$(BIN_DIR)/gauss_blur_test
@@ -188,6 +215,7 @@ check-full: check
 COMPUTE_SANITIZER ?= compute-sanitizer
 sanitize: all
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_bench 17 33 19 0
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_cublas_bench --check-only
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gauss_blur_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/mse_test 1025
@@ -206,6 +234,8 @@ help:
 	@echo 'check-full      Also run large MSE and top-k regressions'
 	@echo 'sanitize        Run selected memory/synchronization checks'
 	@echo 'run-<operator>  Run one test/benchmark with default arguments'
+	@echo 'check-gemm      Check scalar, tiled, WMMA, and cuBLAS GEMM'
+	@echo 'run-gemm-compare Compare all four GEMMs; GEMM_ARGS="M N K repeats"'
 	@echo 'clean           Remove current architecture build directory'
 
 clean:
