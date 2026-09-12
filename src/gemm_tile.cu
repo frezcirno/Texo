@@ -7,10 +7,10 @@ __global__ void gemm(const half *__restrict__ A, // (M, K)
                      const half *__restrict__ B, // (K, N)
                      half *__restrict__ C,       // (M, N)
                      int M, int N, int K, float alpha, float beta) {
+  __shared__ half A_tile[TILE_SIZE][TILE_SIZE];
+  __shared__ half B_tile[TILE_SIZE][TILE_SIZE];
   const int n = blockIdx.x * blockDim.x + threadIdx.x;
   const int m = blockIdx.y * blockDim.y + threadIdx.y;
-  __shared__ float A_tile[TILE_SIZE][TILE_SIZE];
-  __shared__ float B_tile[TILE_SIZE][TILE_SIZE];
   float sum = 0;
   for (int tile = 0; tile < K; tile += TILE_SIZE) {
     const int kx = tile + threadIdx.x;
@@ -21,7 +21,7 @@ __global__ void gemm(const half *__restrict__ A, // (M, K)
         (n >= N || ky >= K) ? 0 : float(B[ky * N + n]);
     __syncthreads();
     for (int k = 0; k < TILE_SIZE; k++) {
-      sum += A_tile[threadIdx.y][k] * B_tile[k][threadIdx.x];
+      sum += float(A_tile[threadIdx.y][k]) * float(B_tile[k][threadIdx.x]);
     }
     __syncthreads();
   }
