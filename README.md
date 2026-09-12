@@ -49,9 +49,15 @@ after changing compiler flags or toolkit while retaining the same build director
 | Sum reduction: manual, Cooperative Groups, CUB | `src/sum*.cu` | `make run-reduce` |
 | Maximum reduction | `src/max.cu` | `make run-max` |
 | Top-k selection in descending order | `src/top_k.cu` | `make run-top-k` |
+| ReLU / Leaky ReLU / SiLU / SwiGLU | `src/relu.cu`, `src/leaky_relu.cu`, `src/silu.cu`, `src/swiglu.cu` | `make run-relu`, `make run-leaky-relu`, `make run-silu`, `make run-swiglu` |
+| Clip to an interval | `src/clip.cu` | `make run-clip` |
+| Square matrix addition / copy | `src/mat_add.cu`, `src/mat_copy.cu` | `make run-mat-add`, `make run-mat-copy` |
+| In-place reversal / array interleave | `src/reverse.cu`, `src/interleave.cu` | `make run-reverse`, `make run-interleave` |
+| Repeated FNV-1a hashing | `src/rainbow.cu` | `make run-rainbow` |
 | Softmax: three- and four-kernel variants | `src/softmax_*kernel.cu` | `make run-softmax` |
 | Scaled dot-product attention | `src/mha.cu` | `make run-attention` |
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
+| Valid 1D cross-correlation | `src/conv1d.cu` | `make run-conv1d` |
 | Matrix-vector multiplication | `src/mat_vec_mul.cu` | `make run-mat-vec` |
 | FP16 GEMM with FP32 accumulation | `src/gemm.cu` | `make run-gemm` |
 | Mean categorical cross entropy | `src/cat_ce.cu` | `make run-cat-ce` |

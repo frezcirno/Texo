@@ -38,6 +38,9 @@ before consuming outputs on the CPU.
 
 ## Dense operators
 
+- `mat_add.cu`: elementwise addition of two float `[N,N]` matrices.
+- `mat_copy.cu`: copy a float `[N,N]` matrix. N is the side length, not the
+  element count. Both square-matrix examples require positive N and N*N fitting int.
 - `mat_vec_mul.cu`: `A[M,N] * x[N] -> y[M]`, float. A warp per row is the default;
   the test also compares a block per row and different block sizes. `nnz` is a
   retained, unused parameter; this is dense storage, not CSR/COO sparse storage.
@@ -62,6 +65,8 @@ before consuming outputs on the CPU.
 
 ## Spatial operators
 
+- `conv1d.cu`: valid float cross-correlation, without padding or kernel reversal.
+  Input length N and kernel length K produce N-K+1 outputs; `1 <= K <= N`.
 - `conv2d.cu`: valid cross-correlation, with no kernel flip or padding. An input
   `[H,W]` and kernel `[KH,KW]` produce `[H-KH+1,W-KW+1]`.
 - `conv3d.cu`: the analogous valid 3D operation, with depth/height/width ordering.
@@ -69,6 +74,24 @@ before consuming outputs on the CPU.
   the weights; they are not normalized by the operator. Odd and even kernels use
   anchor `(KH/2, KW/2)` with integer division. Symmetric Gaussian weights give the
   usual blur; boundary pixels can darken because the zero padding is not renormalized.
+
+## Elementwise and data movement
+
+- `relu.cu`: `max(x, 0)` for N float elements.
+- `leaky_relu.cu`: `x` for positive inputs and `0.01*x` otherwise.
+- `silu.cu`: `x * sigmoid(x)` for N float elements.
+- `swiglu.cu`: even-length input N, split into contiguous halves x and gate;
+  returns N/2 values `silu(x[i]) * gate[i]`.
+- `clip.cu`: clip N finite float values to `[lo,hi]`, where `lo <= hi`.
+- `reverse.cu`: reverses N float elements in place. Reversing twice restores input.
+- `interleave.cu`: two float inputs A[N], B[N] produce 2*N outputs in the order
+  A[0], B[0], A[1], B[1], etc.
+- `rainbow.cu`: interpret N signed 32-bit integers as unsigned bit patterns and
+  apply four-byte FNV-1a hashing R times. Each round processes the least significant
+  byte first; output is uint32. R=0 returns the original bit patterns.
+
+These examples require positive lengths (and nonnegative R); empty-input behavior
+is not part of their tests. Inputs stay unchanged except for the in-place reverse.
 
 ## Experiments
 

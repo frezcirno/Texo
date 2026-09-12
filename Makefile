@@ -10,6 +10,9 @@ TEST_DIR := tests
 
 PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
             conv3d_bench mat_vec_mul_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
+ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test sigmoid_test geglu_test
+BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test rgb2grayscale_test
+PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS)
 BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
 KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(wildcard src/*.cu))
 SUM_OBJECTS := $(BIN_DIR)/sum_manual.o $(BIN_DIR)/sum_cg.o $(BIN_DIR)/sum_cub.o
@@ -17,7 +20,10 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
 
 .PHONY: all help compile-kernels check check-full sanitize clean bench \
         run-reduce run-max run-softmax run-attention run-conv2d run-conv3d \
-        run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k
+        run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k \
+        run-relu run-leaky-relu run-silu run-swiglu run-clip run-mat-add \
+        run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
+        run-sigmoid run-geglu run-rgb2grayscale
 
 all: $(BINARIES)
 compile-kernels: $(KERNEL_OBJECTS)
@@ -70,6 +76,20 @@ $(BIN_DIR)/gauss_blur_test: tests/gauss_blur.cpp src/gauss_blur.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/top_k_test: tests/top_k.cpp src/top_k.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
+
+# Share the elementwise CPU checks while linking each solve independently.
+$(BIN_DIR)/relu_test: TEST_DEFINE := TEST_RELU
+$(BIN_DIR)/leaky_relu_test: TEST_DEFINE := TEST_LEAKY_RELU
+$(BIN_DIR)/silu_test: TEST_DEFINE := TEST_SILU
+$(BIN_DIR)/swiglu_test: TEST_DEFINE := TEST_SWIGLU
+$(BIN_DIR)/clip_test: TEST_DEFINE := TEST_CLIP
+$(BIN_DIR)/sigmoid_test: TEST_DEFINE := TEST_SIGMOID
+$(BIN_DIR)/geglu_test: TEST_DEFINE := TEST_GEGLU
+$(addprefix $(BIN_DIR)/,$(ELEMENTWISE_TESTS)): $(BIN_DIR)/%_test: tests/elementwise.cpp src/%.cu tests/test_utils.h | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -D$(TEST_DEFINE) $(filter %.cpp %.cu,$^) -o $@
+$(addprefix $(BIN_DIR)/,$(BASIC_TESTS)): $(BIN_DIR)/%_test: tests/%.cpp src/%.cu tests/test_utils.h | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $(filter %.cpp %.cu,$^) -o $@
+
 $(BIN_DIR)/reduce_max_compare: benchmarks/reduce_max.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $< -o $@
 
@@ -99,6 +119,34 @@ run-max-compare: $(BIN_DIR)/reduce_max_compare
 	$<
 run-top-k: $(BIN_DIR)/top_k_test
 	$<
+run-relu: $(BIN_DIR)/relu_test
+	$<
+run-leaky-relu: $(BIN_DIR)/leaky_relu_test
+	$<
+run-silu: $(BIN_DIR)/silu_test
+	$<
+run-swiglu: $(BIN_DIR)/swiglu_test
+	$<
+run-clip: $(BIN_DIR)/clip_test
+	$<
+run-mat-add: $(BIN_DIR)/mat_add_test
+	$<
+run-mat-copy: $(BIN_DIR)/mat_copy_test
+	$<
+run-reverse: $(BIN_DIR)/reverse_test
+	$<
+run-conv1d: $(BIN_DIR)/conv1d_test
+	$<
+run-rainbow: $(BIN_DIR)/rainbow_test
+	$<
+run-interleave: $(BIN_DIR)/interleave_test
+	$<
+run-sigmoid: $(BIN_DIR)/sigmoid_test
+	$<
+run-geglu: $(BIN_DIR)/geglu_test
+	$<
+run-rgb2grayscale: $(BIN_DIR)/rgb2grayscale_test
+	$<
 
 # Small reproducible GPU checks. Every executable returns nonzero on failure.
 check: all
@@ -114,6 +162,20 @@ check: all
 	$(BIN_DIR)/mse_test 1025
 	$(BIN_DIR)/gauss_blur_test
 	$(BIN_DIR)/top_k_test
+	$(BIN_DIR)/relu_test
+	$(BIN_DIR)/leaky_relu_test
+	$(BIN_DIR)/silu_test
+	$(BIN_DIR)/swiglu_test
+	$(BIN_DIR)/clip_test
+	$(BIN_DIR)/mat_add_test
+	$(BIN_DIR)/mat_copy_test
+	$(BIN_DIR)/reverse_test
+	$(BIN_DIR)/conv1d_test
+	$(BIN_DIR)/rainbow_test
+	$(BIN_DIR)/interleave_test
+	$(BIN_DIR)/sigmoid_test
+	$(BIN_DIR)/geglu_test
+	$(BIN_DIR)/rgb2grayscale_test
 
 # Large reduction regressions, including the LeetGPU top-k performance shape.
 check-full: check
@@ -127,6 +189,7 @@ sanitize: all
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/mse_test 1025
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/interleave_test
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/mse_test 257
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049
