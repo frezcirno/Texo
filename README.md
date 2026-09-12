@@ -66,7 +66,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | Mean categorical cross entropy | `src/cat_ce.cu` | `make run-cat-ce` |
 | Mean squared error with FP64 reduction | `src/mse.cu` | `make run-mse` |
 | Zero-padded blur / cross-correlation | `src/gauss_blur.cu` | `make run-gauss-blur` |
-| Dot product, inclusive prefix sum, histogram | `src/dot.cu`, `src/prefix_sum.cu`, `src/histogram.cu` | Compile checks only |
+| Dot product, inclusive prefix sum, histogram | `src/dot.cu`, `src/scan.cu`, `src/histogram.cu` | Compile checks only |
 
 `src/mha.cu` currently implements a single attention operation without a batch or
 head dimension; the filename does not imply a complete multi-head attention layer.

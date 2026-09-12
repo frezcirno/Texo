@@ -4,7 +4,7 @@
 
 // 假设一维 block，完整 warp 的 32 个线程一起调用。
 // Exclusive 是编译期参数：true 为 exclusive，false 为 inclusive。
-template <bool Exclusive, typename T> __device__ T warp_scan(T val) {
+template <bool Exclusive = false, typename T> __device__ T warp_scan(T val) {
   const int lane = threadIdx.x & 31;
 #pragma unroll
   for (int off = 16; off > 0; off >>= 1) {
@@ -72,16 +72,17 @@ template <bool Exclusive, typename T> __device__ T block_scan(T val) {
 template <bool Exclusive>
 __global__ void block_scan(const float *input, // (N,)
                            float *output,      // (N,)
-                           float *block_sums,  // (N,)
+                           float *block_sums,  // ([N/BLOCK_SIZE],)
                            int N) {
   const int tid = blockIdx.x * blockDim.x + threadIdx.x;
   const float val = tid < N ? input[tid] : 0.0f;
-  const float prefix = block_scan<Exclusive>(val);
+  const float prefix_sum = block_scan<Exclusive>(val);
   if (tid < N)
-    output[tid] = prefix;
-  if (block_sums != nullptr && threadIdx.x == blockDim.x - 1)
-    // last thread runs
-    block_sums[blockIdx.x] = Exclusive ? prefix + val : prefix;
+    output[tid] = prefix_sum;
+  if (block_sums != nullptr && threadIdx.x == blockDim.x - 1) {
+    // block last thread runs
+    block_sums[blockIdx.x] = Exclusive ? prefix_sum + val : prefix_sum;
+  }
 }
 
 __global__ void add_block_offsets(float *output, const float *block_prefixes,
@@ -94,6 +95,9 @@ __global__ void add_block_offsets(float *output, const float *block_prefixes,
 }
 
 template <bool Exclusive> void scan(const float *input, float *output, int N) {
+  if (N <= 0)
+    return;
+
   constexpr int BLOCK_SIZE = 256;
   const int block_num = 1 + (N - 1) / BLOCK_SIZE;
 
@@ -104,25 +108,20 @@ template <bool Exclusive> void scan(const float *input, float *output, int N) {
   }
 
   float *block_sums = nullptr;
-  float *block_sum_sums = nullptr;
   cudaMalloc(&block_sums, block_num * sizeof(float));
-  cudaMalloc(&block_sum_sums, block_num * sizeof(float));
 
   block_scan<Exclusive>
       <<<block_num, BLOCK_SIZE>>>(input, output, block_sums, N);
 
   // block_sums 本身也可能超过一个 block，因此递归做 inclusive scan。
-  scan<false>(block_sums, block_sum_sums, block_num);
-  add_block_offsets<<<block_num, BLOCK_SIZE>>>(output, block_sum_sums, N);
+  scan<false>(block_sums, block_sums, block_num);
+  add_block_offsets<<<block_num, BLOCK_SIZE>>>(output, block_sums, N);
 
-  cudaFree(block_sum_sums);
   cudaFree(block_sums);
 }
 
-// input, output are device pointers. output[i] = input[0] + ... + input[i] (inclusive).
+// input, output are device pointers. output[i] = input[0] + ... + input[i]
+// (inclusive).
 extern "C" void solve(const float *input, float *output, int N) {
-  if (N <= 0) {
-    return;
-  }
   scan<false>(input, output, N);
 }
