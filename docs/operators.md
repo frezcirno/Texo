@@ -74,6 +74,21 @@ before consuming outputs on the CPU.
   input and operand buffering for full/aligned tiles. Generic inputs retain a
   fixed 64x64 WMMA pipeline. See the [multistage notes](gemm-wmma-multistage.md)
   for tile selection, alignment, and tuning limits.
+- `gemm_wmma_tiled_pipeline_mainloop.cu`: the same FP16 contract, with a BK=64
+  mainloop for small, complete, aligned output grids. Generic inputs
+  retain the fixed 64x64 WMMA pipeline. See the
+  [mainloop notes](gemm-wmma-mainloop.md) for dispatch and tuning.
+- `gemm_wmma_tiled_pipeline_reuse.cu`: the same FP16 contract, adding a
+  96x128 block / 48x64 warp tile on sufficiently large complete/aligned grids.
+  See the [reuse-tile notes](gemm-wmma-reuse.md) for its dispatch boundaries
+  and measured benefit from fewer A/B loads.
+- `gemm_wmma_tiled_pipeline_epilogue.cu`: the same FP16 contract, with an
+  alpha=1/beta=0 template specialization and a general alpha/beta path.
+  See the [epilogue notes](gemm-wmma-epilogue.md) for dispatch and measurements.
+- `gemm_wmma_tiled_pipeline_large.cu`: the same FP16 contract, allowing larger
+  block/warp tiles with dynamic shared input storage above 48 KiB. Unsupported
+  shared-memory requirements fall back to the generic pipeline. See the
+  [large-tile notes](gemm-wmma-large.md) for configuration and experiments.
 - `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]
   and C[BATCH,M,N], using contiguous row-major storage without broadcasting or
   transposes. The current kernel adds into C; callers must clear C before each

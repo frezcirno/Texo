@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <random>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,7 +26,7 @@ extern "C" void solve(const half*, const half*, half*, int, int, int, float, flo
 static bool run_case(const char* name, int m, int n, int k,
                      float alpha, float beta, bool ones, int repeats,
                      size_t c_offset = 128, size_t a_offset = 0,
-                     size_t b_offset = 0) {
+                     size_t b_offset = 0, bool nan_c = false) {
   size_t na = size_t(m) * k, nb = size_t(k) * n, nc = size_t(m) * n;
   // A 256-byte prefix preserves cudaMalloc alignment while guarding C.
   // Keep a separate offset=1 correctness case for unaligned output buffers.
@@ -35,7 +36,8 @@ static bool run_case(const char* name, int m, int n, int k,
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
   for (auto& v : a) v = __float2half(ones ? 1.0f : dist(rng));
   for (auto& v : b) v = __float2half(ones ? 1.0f : dist(rng));
-  for (auto& v : initial) v = __float2half(dist(rng));
+  for (auto& v : initial)
+    v = __float2half(nan_c ? std::numeric_limits<float>::quiet_NaN() : dist(rng));
   for (int row = 0; row < m; ++row)
     for (int col = 0; col < n; ++col)
       for (int i = 0; i < k; ++i)
@@ -75,7 +77,8 @@ static bool run_case(const char* name, int m, int n, int k,
     }
     size_t bad = 0;
     for (size_t i = 0; i < nc; ++i) {
-      double ref = __half2float(__float2half(float(alpha * product[i] + beta * __half2float(previous[i]))));
+      double ref = __half2float(__float2half(float(alpha * product[i] +
+          (beta == 0.0f ? 0.0 : beta * __half2float(previous[i])))));
       double got = __half2float(actual[i + c_offset]);
       double diff = std::abs(got - ref);
       max_error = std::max(max_error, diff);
@@ -187,6 +190,31 @@ int main(int argc, char** argv) {
     passed &= run_case("pipeline-five", 256, 256, 160, 0.75f, 0.5f, false, 0, 1);
     passed &= run_case("pipeline-seven", 256, 128, 224, 1, 0, false, 0);
     passed &= run_case("pipeline-eight", 128, 256, 256, -0.5f, 0.25f, false, 0);
+    // Odd numbers of BK=64 chunks exercise ring wraparound and drain.
+    passed &= run_case("BK64-three", 128, 128, 192, 0.75f, -0.25f, false, 0);
+    passed &= run_case("BK64-five", 128, 192, 320, -0.75f, 0.5f, false, 0, 1);
+    passed &= run_case("BK64-seven", 192, 128, 448, 1, 0, false, 0);
+    // The default 96x128 dispatch starts at 192 blocks. Check short input
+    // rings, repeated alpha/beta updates, and scalar stores at that boundary.
+    passed &= run_case("reuse-auto-one", 384, 6144, 32, 0.75f, -0.25f, false, 0, 1);
+    passed &= run_case("reuse-auto-three", 384, 6144, 96, -0.75f, 0.5f, false, 0);
+    // Forced BM=96 builds exercise a fifth chunk on a non-64-row matrix;
+    // automatic dispatch keeps this shape on the generic tail path.
+    passed &= run_case("reuse-96-five", 288, 384, 160, 0.5f, 0.25f, false, 0, 1);
+    // Exact alpha=1/beta=0 dispatch must still distinguish either scalar
+    // changing on its own. Poison old C to check the beta=0 no-read contract.
+    passed &= run_case("alpha-one-beta", 128, 128, 96, 1, 0.5f, false, 0);
+    passed &= run_case("alpha-other-beta0", 128, 128, 96, -0.75f, 0, false, 0);
+    passed &= run_case("ab10-nan-native", 128, 128, 64, 1, 0, false, 0, 128, 0, 0, true);
+    passed &= run_case("ab10-nan-tail", 65, 129, 67, 1, 0, false, 0, 128, 0, 0, true);
+    passed &= run_case("ab10-nan-K0", 64, 64, 0, 1, 0, false, 0, 128, 0, 0, true);
+    passed &= run_case("ab10-nan-unalign-C", 128, 192, 256, 1, -0.0f, false, 0, 1, 0, 0, true);
+    // Complete 128x256 / 256x128 blocks also exercise forced dynamic-shared
+    // builds: one/four/five/seven K chunks, both epilogues, and unaligned C.
+    passed &= run_case("large-one-nan", 256, 256, 32, 1, 0, false, 0, 128, 0, 0, true);
+    passed &= run_case("large-four", 256, 256, 128, 0.75f, -0.25f, false, 0, 1);
+    passed &= run_case("large-five-nan", 256, 256, 160, 1, -0.0f, false, 0, 1, 0, 0, true);
+    passed &= run_case("large-seven", 256, 256, 224, -0.75f, 0.5f, false, 0);
     passed &= run_case("single-row", 1, 35, 31, 0.5f, 0.25f, false, 0);
     passed &= run_case("single-column", 35, 1, 33, -1, 1, false, 0);
     passed &= run_case("alpha-beta", 19, 7, 65, -0.75f, 0.5f, false, 0);

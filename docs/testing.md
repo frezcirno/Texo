@@ -68,16 +68,29 @@ or T4 runtime validation.
 - Matrix-vector and GEMM benchmarks warm up and report the median of five batches
   of repeated launches. They reuse input buffers and exclude host/device copies.
   GEMM timing uses `beta=0` to prevent repeated accumulation into C.
-  `make check-gemm` validates scalar, tiled, all six WMMA variants, and cuBLAS;
+  `make check-gemm` validates scalar, tiled, all ten WMMA variants, and cuBLAS;
   `make run-gemm-compare GEMM_ARGS="1024 1024 1024 100"` compares their timings.
-  The 36-case GEMM suite also checks misaligned A/B base pointers on complete
+  The 52-case GEMM suite also checks misaligned A/B base pointers on complete
   tiles, one/two/three full K chunks, multiple output blocks, independently partial
   M/N/K dimensions, K=0, and unaligned C with aligned A/B. Wide 1024x2048 outputs
   with K=32/96 cover larger block/warp tile builds, nontrivial alpha/beta, and
   aligned/unaligned output stores. Additional two/four/five/seven/eight-chunk
   cases cover short prologues, ring wraparound, and drain for multistage input
-  buffers. `sanitize` runs memcheck,
-  racecheck, and synccheck over the complete suite for all four pipelined versions.
+  buffers. Three/five/seven BK=64 chunks also exercise ring wraparound/drain,
+  nontrivial alpha/beta, and unaligned C. The 96x128 tile is checked at its
+  192-block automatic-dispatch boundary with one/three K chunks, alpha/beta,
+  and unaligned C; forced BM=96 builds also cover a non-64-row five-chunk case.
+  Alpha/beta checks vary each scalar independently and initialize C with NaNs
+  for beta=0 on native, tail, K=0, and unaligned-output paths, including beta=-0.
+  The reference ignores old C when beta=0.
+  Four additional 256x256 cases cover one/four/five/seven K chunks, general
+  alpha/beta, NaN old C, and unaligned C for larger tiles. The forced
+  `gemm_wmma_tiled_pipeline_large_dynamic_test` runs the same suite using
+  a 128x256 block, 32x64 warp, four stages, and 96 KiB dynamic shared memory.
+  It is included in `check-gemm`, `check`, and all three sanitizer tools;
+  it is separate from the thirteen default benchmark implementations.
+  `sanitize` runs memcheck,
+  racecheck, and synccheck over the complete suite for all eight pipelined versions.
   All use 256-byte-aligned benchmark buffers, with output guards and a separate
   unaligned correctness case. cuBLAS handle creation happens before timing.
   CUDA-event batches include any host submission gaps between GPU operations.
