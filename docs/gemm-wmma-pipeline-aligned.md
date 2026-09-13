@@ -1,7 +1,7 @@
 # WMMA pipeline with a full, aligned specialization
 
-This page records the initial specialization at commit `5eed6d5`. The current
-fast path and its newer measurements are described in the
+This page records the initial specialization at commit `5eed6d5`. The separate
+shared-layout successor and its measurements are described in the
 [shared-layout experiment](gemm-wmma-shared-layout.md).
 
 `src/gemm_wmma_tiled_pipeline_aligned.cu` is an independent successor to

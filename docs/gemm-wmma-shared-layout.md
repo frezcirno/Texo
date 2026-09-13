@@ -1,10 +1,14 @@
 # Shared-layout and larger-tile experiment
 
-The full/aligned path in `src/gemm_wmma_tiled_pipeline_aligned.cu` now uses
+The full/aligned path in `src/gemm_wmma_tiled_pipeline_aligned_swizzled.cu` now uses
 permuted shared storage and explicit Tensor Core instructions. On the measured
 A800, ordinary 1024/2048 cubed benchmarks improve by 1.31x/1.34x over the initial
 aligned specialization at `5eed6d5`. Larger block and warp tiles were tested;
 the default remains BM=BN=64, BK=32, WM=WN=32, with four warps per block.
+
+The implementation was subsequently split into its own `_aligned_swizzled.cu`
+file; the historical measurements below describe that implementation before the
+rename. The next version is covered in the [multistage experiment](gemm-wmma-multistage.md).
 
 ## Implementation and contract
 
@@ -163,7 +167,7 @@ The final implementation changes both storage layout and matrix-load mapping.
 From the repository root, select an available GPU and run the default version:
 
 ```bash
-CUDA_VISIBLE_DEVICES=4 make run-gemm-wmma-tiled-pipeline-aligned GEMM_ARGS="2048 2048 2048 100"
+CUDA_VISIBLE_DEVICES=4 make run-gemm-wmma-tiled-pipeline-aligned-swizzled GEMM_ARGS="2048 2048 2048 100"
 CUDA_VISIBLE_DEVICES=4 make check
 CUDA_VISIBLE_DEVICES=4 make sanitize
 ```
@@ -174,9 +178,9 @@ stale binary:
 ```bash
 make BIN_DIR=build/sm_80/wide \
   NVCCFLAGS='-O3 -std=c++14 -arch=sm_80 -Xcompiler -Wall -lineinfo -DGEMM_BN=128 -DGEMM_WN=64' \
-  build/sm_80/wide/gemm_wmma_tiled_pipeline_aligned_bench
-CUDA_VISIBLE_DEVICES=4 build/sm_80/wide/gemm_wmma_tiled_pipeline_aligned_bench --check-only
-CUDA_VISIBLE_DEVICES=4 build/sm_80/wide/gemm_wmma_tiled_pipeline_aligned_bench 2048 2048 2048 100
+  build/sm_80/wide/gemm_wmma_tiled_pipeline_aligned_swizzled_bench
+CUDA_VISIBLE_DEVICES=4 build/sm_80/wide/gemm_wmma_tiled_pipeline_aligned_swizzled_bench --check-only
+CUDA_VISIBLE_DEVICES=4 build/sm_80/wide/gemm_wmma_tiled_pipeline_aligned_swizzled_bench 2048 2048 2048 100
 ```
 
 Other knobs remain `GEMM_BM/BN/BK/WM/WN`; set `GEMM_USE_SWIZZLE=0` to compare the

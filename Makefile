@@ -14,14 +14,17 @@ ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test s
 BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test rgb2grayscale_test batched_mm_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS)
 GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_wmma_tiled_bench \
-                gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_aligned_bench gemm_cublas_bench
+                gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_aligned_bench \
+                gemm_wmma_tiled_pipeline_aligned_swizzled_bench gemm_wmma_tiled_pipeline_multistage_bench \
+                gemm_cublas_bench
 PROGRAMS += $(filter-out gemm_bench,$(GEMM_BENCHES))
 GEMM_ARGS ?= 1024 1024 1024 100
 NSYS ?= $(CUDA_HOME)/bin/nsys
 NSYS_DIR ?= $(BIN_DIR)/nsys
 NSYS_FLAGS ?= --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none
 NSYS_REPORTS ?= cuda_gpu_kern_sum,cuda_kern_exec_sum
-NSYS_GEMMS := gemm_wmma gemm_wmma_tiled gemm_wmma_tiled_pipeline gemm_wmma_tiled_pipeline_aligned gemm_cublas
+NSYS_GEMMS := gemm_wmma gemm_wmma_tiled gemm_wmma_tiled_pipeline gemm_wmma_tiled_pipeline_aligned \
+              gemm_wmma_tiled_pipeline_aligned_swizzled gemm_wmma_tiled_pipeline_multistage gemm_cublas
 NCU ?= $(CUDA_HOME)/bin/ncu
 NCU_RUN ?=
 NCU_DIR ?= $(BIN_DIR)/ncu
@@ -45,6 +48,7 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-sigmoid run-geglu run-rgb2grayscale run-batched-mm \
         run-gemm-tile run-gemm-wmma run-gemm-wmma-tiled run-gemm-cublas run-gemm-compare check-gemm \
         run-gemm-wmma-tiled-pipeline run-gemm-wmma-tiled-pipeline-aligned \
+        run-gemm-wmma-tiled-pipeline-aligned-swizzled run-gemm-wmma-tiled-pipeline-multistage \
         nsys-gemm nsys-gemm-stats ncu-gemm-build ncu-gemm ncu-gemm-stats
 
 all: $(BINARIES)
@@ -100,6 +104,10 @@ $(BIN_DIR)/gemm_wmma_tiled_pipeline_bench: tests/gemm.cu src/gemm_wmma_tiled_pip
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_aligned.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_aligned_swizzled.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_multistage.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gemm_cublas_bench: tests/gemm.cu src/gemm_cublas.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@ -lcublas
 $(BIN_DIR)/cat_ce_test: tests/cat_ce.cpp src/cat_ce.cu | $(BIN_DIR)
@@ -152,6 +160,10 @@ run-gemm-wmma-tiled: $(BIN_DIR)/gemm_wmma_tiled_bench
 run-gemm-wmma-tiled-pipeline: $(BIN_DIR)/gemm_wmma_tiled_pipeline_bench
 	$< $(GEMM_ARGS)
 run-gemm-wmma-tiled-pipeline-aligned: $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench
+	$< $(GEMM_ARGS)
+run-gemm-wmma-tiled-pipeline-aligned-swizzled: $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench
+	$< $(GEMM_ARGS)
+run-gemm-wmma-tiled-pipeline-multistage: $(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench
 	$< $(GEMM_ARGS)
 run-gemm-cublas: $(BIN_DIR)/gemm_cublas_bench
 	$<
@@ -253,6 +265,8 @@ check: all
 	$(BIN_DIR)/gemm_wmma_tiled_bench --check-only
 	$(BIN_DIR)/gemm_wmma_tiled_pipeline_bench --check-only
 	$(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench --check-only
+	$(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench --check-only
+	$(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench --check-only
 	$(BIN_DIR)/gemm_cublas_bench --check-only
 	$(BIN_DIR)/cat_ce_test
 	$(BIN_DIR)/mse_test 1025
@@ -290,6 +304,12 @@ sanitize: all
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench --check-only
 	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench --check-only
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench --check-only
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench --check-only
+	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench --check-only
+	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench --check-only
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench --check-only
+	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench --check-only
+	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench --check-only
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_cublas_bench --check-only
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gauss_blur_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
@@ -310,14 +330,16 @@ help:
 	@echo 'sanitize        Run selected memory/synchronization checks'
 	@echo 'run-<operator>  Run one test/benchmark with default arguments'
 	@echo 'check-gemm      Check scalar, tiled, all WMMA variants, and cuBLAS GEMM'
-	@echo 'run-gemm-compare Compare all seven GEMMs; GEMM_ARGS="M N K repeats"'
+	@echo 'run-gemm-compare Compare all nine GEMMs; GEMM_ARGS="M N K repeats"'
 	@echo 'run-gemm-wmma-tiled-pipeline Run async/double-buffered WMMA; uses GEMM_ARGS'
 	@echo 'run-gemm-wmma-tiled-pipeline-aligned Run WMMA with a full/aligned fast path; uses GEMM_ARGS'
+	@echo 'run-gemm-wmma-tiled-pipeline-aligned-swizzled Run XOR shared-layout GEMM; uses GEMM_ARGS'
+	@echo 'run-gemm-wmma-tiled-pipeline-multistage Run GEMM with deeper input/operand buffering; uses GEMM_ARGS'
 	@echo 'nsys-gemm       Profile all WMMA variants and cuBLAS serially, then print stats'
 	@echo '                Set CUDA_VISIBLE_DEVICES, GEMM_ARGS, NSYS_DIR, NSYS_FLAGS as needed'
 	@echo 'nsys-gemm-stats  Print existing reports in NSYS_DIR (default: $(BIN_DIR)/nsys)'
-	@echo 'ncu-gemm-build  Build all seven GEMMs with -lineinfo in NCU_BIN_DIR'
-	@echo 'ncu-gemm        Profile all seven serially, then export text/CSV and print a summary'
+	@echo 'ncu-gemm-build  Build all nine GEMMs with -lineinfo in NCU_BIN_DIR'
+	@echo 'ncu-gemm        Profile all nine serially, then export text/CSV and print a summary'
 	@echo '                Set CUDA_VISIBLE_DEVICES, GEMM_ARGS, NCU_DIR, NCU_SET, NCU_RUN as needed'
 	@echo 'ncu-gemm-stats  Export existing NCU reports and regenerate comparison.csv (no GPU needed)'
 	@echo 'clean           Remove current architecture build directory'

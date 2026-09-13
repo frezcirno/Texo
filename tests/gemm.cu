@@ -181,6 +181,12 @@ int main(int argc, char** argv) {
     passed &= run_case("wide-one-unalign-C", 1024, 2048, 32, 0.75f, -0.25f, false, 0, 1);
     passed &= run_case("wide-three-chunks", 1024, 2048, 96, -0.75f, 0.5f, false, 0);
     passed &= run_case("wide-unaligned-A", 1024, 2048, 32, 1, 0, false, 0, 128, 1, 0);
+    // Short prologues, ring wraparound, and drain for 2/3/4 input stages.
+    passed &= run_case("pipeline-two", 128, 128, 64, 0.75f, -0.25f, false, 0);
+    passed &= run_case("pipeline-four", 128, 128, 128, -0.75f, 0.5f, false, 0);
+    passed &= run_case("pipeline-five", 256, 256, 160, 0.75f, 0.5f, false, 0, 1);
+    passed &= run_case("pipeline-seven", 256, 128, 224, 1, 0, false, 0);
+    passed &= run_case("pipeline-eight", 128, 256, 256, -0.5f, 0.25f, false, 0);
     passed &= run_case("single-row", 1, 35, 31, 0.5f, 0.25f, false, 0);
     passed &= run_case("single-column", 35, 1, 33, -1, 1, false, 0);
     passed &= run_case("alpha-beta", 19, 7, 65, -0.75f, 0.5f, false, 0);
