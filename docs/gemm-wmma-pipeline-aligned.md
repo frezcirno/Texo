@@ -1,10 +1,18 @@
 # WMMA pipeline with a full, aligned specialization
 
+This page records the initial specialization at commit `5eed6d5`. The current
+fast path and its newer measurements are described in the
+[shared-layout experiment](gemm-wmma-shared-layout.md).
+
 `src/gemm_wmma_tiled_pipeline_aligned.cu` is an independent successor to
 `gemm_wmma_tiled_pipeline.cu`. It implements the first experiment proposed in
 the [pipeline NCU analysis](gemm-wmma-pipeline-ncu.md): remove input checks and
 repeated address calculations when the entire matrix satisfies the tile layout.
 The original pipeline source remains the comparison baseline.
+
+The follow-up [cuBLAS gap analysis](gemm-wmma-pipeline-aligned-ncu.md) profiles
+1024 and 2048 cubed, quantifies remaining data movement and shared-memory costs,
+and ranks the next experiments.
 
 ## Dispatch and implementation
 

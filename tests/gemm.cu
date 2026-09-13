@@ -176,6 +176,11 @@ int main(int argc, char** argv) {
     passed &= run_case("M-tail-only", 63, 64, 96, 1, 0, false, 0);
     passed &= run_case("N-tail-only", 64, 63, 96, 1, 0, false, 0);
     passed &= run_case("K-tail-only", 64, 64, 95, 1, 0, false, 0);
+    // Wide matrices also exercise larger block/warp tile builds: random data,
+    // alpha/beta, one/three K chunks, and vector/scalar output stores.
+    passed &= run_case("wide-one-unalign-C", 1024, 2048, 32, 0.75f, -0.25f, false, 0, 1);
+    passed &= run_case("wide-three-chunks", 1024, 2048, 96, -0.75f, 0.5f, false, 0);
+    passed &= run_case("wide-unaligned-A", 1024, 2048, 32, 1, 0, false, 0, 128, 1, 0);
     passed &= run_case("single-row", 1, 35, 31, 0.5f, 0.25f, false, 0);
     passed &= run_case("single-column", 35, 1, 33, -1, 1, false, 0);
     passed &= run_case("alpha-beta", 19, 7, 65, -0.75f, 0.5f, false, 0);

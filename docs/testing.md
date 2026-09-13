@@ -70,9 +70,11 @@ or T4 runtime validation.
   GEMM timing uses `beta=0` to prevent repeated accumulation into C.
   `make check-gemm` validates scalar, tiled, all four WMMA variants, and cuBLAS;
   `make run-gemm-compare GEMM_ARGS="1024 1024 1024 100"` compares their timings.
-  The 28-case GEMM suite also checks misaligned A/B base pointers on complete
+  The 31-case GEMM suite also checks misaligned A/B base pointers on complete
   tiles, one/two/three full K chunks, multiple output blocks, independently partial
-  M/N/K dimensions, K=0, and unaligned C with aligned A/B. `sanitize` runs memcheck,
+  M/N/K dimensions, K=0, and unaligned C with aligned A/B. Wide 1024x2048 outputs
+  with K=32/96 cover larger block/warp tile builds, nontrivial alpha/beta, and
+  aligned/unaligned output stores. `sanitize` runs memcheck,
   racecheck, and synccheck over the complete suite for both pipelined WMMA versions.
   All use 256-byte-aligned benchmark buffers, with output guards and a separate
   unaligned correctness case. cuBLAS handle creation happens before timing.

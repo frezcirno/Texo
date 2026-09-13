@@ -195,10 +195,16 @@ CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline GEMM_ARGS="1024 1024 10
 
 `gemm_wmma_tiled_pipeline_aligned.cu` adds a specialization for complete tiles
 with 16-byte-aligned A/B pointers. It precomputes copy addresses, advances them
-between K chunks, and removes per-copy bounds/alignment checks. The dispatcher
-keeps the generic pipeline for other inputs. See the [aligned pipeline experiment](docs/gemm-wmma-pipeline-aligned.md)
-for dispatch conditions, validation, timings, and counter comparisons. This version
-is included in the same test, comparison, sanitizer, and profiler targets.
+between K chunks, and removes per-copy bounds/alignment checks. The current fast
+path uses an XOR shared-memory layout, explicit `ldmatrix`/`mma.sync`, and packed
+output stores. The default remains a 64x64 block with a 32x32 output per warp;
+shared storage drops from 26 to 16 KiB/block. Other inputs retain the generic
+pipeline. See the [shared-layout experiment](docs/gemm-wmma-shared-layout.md) for
+the implementation, larger block/warp tile trials, validation, and before/after
+measurements. This version is included in the same test, comparison, sanitizer,
+and profiler targets. The earlier [aligned pipeline experiment](docs/gemm-wmma-pipeline-aligned.md)
+and [NCU follow-up against cuBLAS](docs/gemm-wmma-pipeline-aligned-ncu.md) document
+the starting point for this optimization.
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-aligned GEMM_ARGS="1024 1024 1024 100"

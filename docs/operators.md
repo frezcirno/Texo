@@ -64,7 +64,11 @@ before consuming outputs on the CPU.
   This guarantees complete tiles and aligned row strides. C still needs only
   half alignment. Other inputs use the generic pipeline, including K=0. Both
   versions use `size_t` address arithmetic and flattened output tile grids.
-  See [the aligned pipeline notes](gemm-wmma-pipeline-aligned.md) for details.
+  The aligned fast path uses XOR shared storage and explicit `ldmatrix`/`mma.sync`
+  when BN/BK are powers of two, and retains full-tile WMMA otherwise. It writes
+  packed `half2` only when C is four-byte aligned, with scalar stores otherwise.
+  Default block/warp tiles remain 64x64/32x32. See
+  [the shared-layout notes](gemm-wmma-shared-layout.md) for tuning and validation.
 - `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]
   and C[BATCH,M,N], using contiguous row-major storage without broadcasting or
   transposes. The current kernel adds into C; callers must clear C before each
