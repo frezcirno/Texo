@@ -25,14 +25,14 @@ __global__ void gemm(const half *A, const half *B, half *C, int M, int N, int K,
   wmma::fragment<wmma::accumulator, TILE_SIZE, TILE_SIZE, TILE_SIZE, float> acc;
   wmma::fill_fragment(acc, 0.0f);
 
-  for (int tile = 0; tile < K; tile += TILE_SIZE) {
+  for (int tb = 0; tb < K; tb += TILE_SIZE) {
     // 256 elements / 32 lanes = 8 elements per lane, for each input tile.
     for (int i = threadIdx.x; i < 256; i += 32) {
       const int y = i / TILE_SIZE, x = i % TILE_SIZE;
       const int m = m0 + y, n = n0 + x;
-      const int kx = tile + x, ky = tile + y;
-      A_tile[y][x] = (m >= M || kx >= K) ? 0 : float(A[m * K + kx]);
-      B_tile[y][x] = (ky >= K || n >= N) ? 0 : float(B[ky * N + n]);
+      const int kx = tb + x, ky = tb + y;
+      A_tile[y][x] = (m >= M || kx >= K) ? half(0) : A[m * K + kx];
+      B_tile[y][x] = (ky >= K || n >= N) ? half(0) : B[ky * N + n];
     }
     __syncthreads();
     wmma::load_matrix_sync(a_frag, &A_tile[0][0], TILE_SIZE);

@@ -12,13 +12,13 @@ __global__ void gemm(const half *__restrict__ A, // (M, K)
   const int n = blockIdx.x * blockDim.x + threadIdx.x;
   const int m = blockIdx.y * blockDim.y + threadIdx.y;
   float sum = 0;
-  for (int tile = 0; tile < K; tile += TILE_SIZE) {
-    const int kx = tile + threadIdx.x;
-    const int ky = tile + threadIdx.y;
+  for (int tb = 0; tb < K; tb += TILE_SIZE) {
+    const int kx = tb + threadIdx.x;
+    const int ky = tb + threadIdx.y;
     A_tile[threadIdx.y][threadIdx.x] =
-        (m >= M || kx >= K) ? 0 : float(A[m * K + kx]);
+        (m >= M || kx >= K) ? half(0) : A[m * K + kx];
     B_tile[threadIdx.y][threadIdx.x] =
-        (n >= N || ky >= K) ? 0 : float(B[ky * N + n]);
+        (n >= N || ky >= K) ? half(0) : B[ky * N + n];
     __syncthreads();
     for (int k = 0; k < TILE_SIZE; k++) {
       sum += float(A_tile[threadIdx.y][k]) * float(B_tile[k][threadIdx.x]);
