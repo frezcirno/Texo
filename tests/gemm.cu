@@ -24,7 +24,8 @@ extern "C" void solve(const half*, const half*, half*, int, int, int, float, flo
 // Tolerance is explicit: abs_error <= 0.01 + 0.01 * abs(reference).
 static bool run_case(const char* name, int m, int n, int k,
                      float alpha, float beta, bool ones, int repeats,
-                     size_t c_offset = 128) {
+                     size_t c_offset = 128, size_t a_offset = 0,
+                     size_t b_offset = 0) {
   size_t na = size_t(m) * k, nb = size_t(k) * n, nc = size_t(m) * n;
   // A 256-byte prefix preserves cudaMalloc alignment while guarding C.
   // Keep a separate offset=1 correctness case for unaligned output buffers.
@@ -41,9 +42,10 @@ static bool run_case(const char* name, int m, int n, int k,
         product[size_t(row) * n + col] +=
           double(__half2float(a[size_t(row) * k + i])) * __half2float(b[size_t(i) * n + col]);
 
-  half *da, *db, *dc;
-  CUDA_CHECK(cudaMalloc(&da, std::max(size_t(1), na) * sizeof(half)));
-  CUDA_CHECK(cudaMalloc(&db, std::max(size_t(1), nb) * sizeof(half)));
+  half *a_storage, *b_storage, *dc;
+  CUDA_CHECK(cudaMalloc(&a_storage, (a_offset + std::max(size_t(1), na)) * sizeof(half)));
+  CUDA_CHECK(cudaMalloc(&b_storage, (b_offset + std::max(size_t(1), nb)) * sizeof(half)));
+  half *da = a_storage + a_offset, *db = b_storage + b_offset;
   CUDA_CHECK(cudaMalloc(&dc, actual.size() * sizeof(half)));
   if (na) CUDA_CHECK(cudaMemcpy(da, a.data(), na * sizeof(half), cudaMemcpyHostToDevice));
   if (nb) CUDA_CHECK(cudaMemcpy(db, b.data(), nb * sizeof(half), cudaMemcpyHostToDevice));
@@ -117,8 +119,8 @@ static bool run_case(const char* name, int m, int n, int k,
     CUDA_CHECK(cudaEventDestroy(stop));
   }
   std::puts("");
-  CUDA_CHECK(cudaFree(da));
-  CUDA_CHECK(cudaFree(db));
+  CUDA_CHECK(cudaFree(a_storage));
+  CUDA_CHECK(cudaFree(b_storage));
   CUDA_CHECK(cudaFree(dc));
   return passed;
 }
@@ -158,6 +160,14 @@ int main(int argc, char** argv) {
     passed &= run_case("rectangular-tail", 17, 33, 19, 1, 0, false, 0);
     passed &= run_case("multi-tile-tail", 65, 129, 67, 0.75f, -0.25f, false, 0);
     passed &= run_case("unaligned-output", 17, 33, 19, 1, 0, false, 0, 1);
+    // Aligned strides with misaligned base pointers must avoid 16-byte copies.
+    passed &= run_case("unaligned-A", 32, 64, 96, 1, 0, false, 0, 128, 1, 0);
+    passed &= run_case("unaligned-B", 32, 64, 96, 1, 0, false, 0, 128, 0, 1);
+    passed &= run_case("unaligned-A-B", 32, 64, 96, 0.75f, -0.25f, false, 0, 128, 1, 1);
+    // Full async groups across two/three K chunks exercise buffer reuse/drain.
+    passed &= run_case("two-K-chunks", 64, 64, 64, 0.75f, -0.25f, false, 0);
+    passed &= run_case("three-K-chunks", 64, 64, 96, 0.75f, -0.25f, false, 0);
+    passed &= run_case("aligned-tail", 65, 72, 72, 1, 0, false, 0);
     passed &= run_case("single-row", 1, 35, 31, 0.5f, 0.25f, false, 0);
     passed &= run_case("single-column", 35, 1, 33, -1, 1, false, 0);
     passed &= run_case("alpha-beta", 19, 7, 65, -0.75f, 0.5f, false, 0);
