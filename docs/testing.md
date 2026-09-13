@@ -68,11 +68,12 @@ or T4 runtime validation.
 - Matrix-vector and GEMM benchmarks warm up and report the median of five batches
   of repeated launches. They reuse input buffers and exclude host/device copies.
   GEMM timing uses `beta=0` to prevent repeated accumulation into C.
-  `make check-gemm` validates scalar, tiled, all three WMMA variants, and cuBLAS;
+  `make check-gemm` validates scalar, tiled, all four WMMA variants, and cuBLAS;
   `make run-gemm-compare GEMM_ARGS="1024 1024 1024 100"` compares their timings.
-  GEMM also checks misaligned A/B base pointers, two and three full K chunks,
-  and partial tiles with aligned row strides. `sanitize` runs memcheck,
-  racecheck, and synccheck over the complete pipelined WMMA correctness suite.
+  The 28-case GEMM suite also checks misaligned A/B base pointers on complete
+  tiles, one/two/three full K chunks, multiple output blocks, independently partial
+  M/N/K dimensions, K=0, and unaligned C with aligned A/B. `sanitize` runs memcheck,
+  racecheck, and synccheck over the complete suite for both pipelined WMMA versions.
   All use 256-byte-aligned benchmark buffers, with output guards and a separate
   unaligned correctness case. cuBLAS handle creation happens before timing.
   CUDA-event batches include any host submission gaps between GPU operations.

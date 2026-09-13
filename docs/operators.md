@@ -56,6 +56,15 @@ before consuming outputs on the CPU.
   The cuBLAS baseline uses `cublasGemmEx`, disallows reduced-precision
   reductions, and reuses a handle on one selected device per host thread with the
   default stream. It requires linking with `-lcublas`.
+- `gemm_wmma_tiled_pipeline.cu`, `gemm_wmma_tiled_pipeline_aligned.cu`: the same
+  FP16 GEMM contract with two input buffers and 16-byte asynchronous staging on
+  sm_80+. Partial or unaligned input groups use scalar loads and zero-fill;
+  sm_75 uses synchronous staging. The aligned version selects a specialization
+  when M/N/K are positive multiples of BM/BN/BK and A/B are 16-byte aligned.
+  This guarantees complete tiles and aligned row strides. C still needs only
+  half alignment. Other inputs use the generic pipeline, including K=0. Both
+  versions use `size_t` address arithmetic and flattened output tile grids.
+  See [the aligned pipeline notes](gemm-wmma-pipeline-aligned.md) for details.
 - `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]
   and C[BATCH,M,N], using contiguous row-major storage without broadcasting or
   transposes. The current kernel adds into C; callers must clear C before each

@@ -1,5 +1,8 @@
 # Double-buffered WMMA GEMM
 
+The follow-up [NCU analysis](gemm-wmma-pipeline-ncu.md) compares the pipeline,
+original tiled kernel, and cuBLAS, and ranks the next optimization experiments.
+
 `src/gemm_wmma_tiled_pipeline.cu` stages the next K chunk while computing the
 current chunk with WMMA. It keeps the default BM=64, BN=64, BK=32, WM=32, WN=32,
 SKEW=16 configuration of `gemm_wmma_tiled.cu`: four warps per block, with four

@@ -61,7 +61,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
 | Valid 1D cross-correlation | `src/conv1d.cu` | `make run-conv1d` |
 | Matrix-vector multiplication | `src/mat_vec_mul.cu` | `make run-mat-vec` |
-| FP16 GEMM: scalar, tiled, WMMA, multi-warp WMMA, pipelined WMMA, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_wmma_tiled.cu`, `src/gemm_wmma_tiled_pipeline.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
+| FP16 GEMM: scalar, tiled, WMMA, multi-warp WMMA, pipelined WMMA, aligned pipeline, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_wmma_tiled.cu`, `src/gemm_wmma_tiled_pipeline.cu`, `src/gemm_wmma_tiled_pipeline_aligned.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
 | Batched FP32 matrix multiplication | `src/batched_mm.cu` | `make run-batched-mm` |
 | Mean categorical cross entropy | `src/cat_ce.cu` | `make run-cat-ce` |
 | Mean squared error with FP64 reduction | `src/mse.cu` | `make run-mse` |
@@ -88,7 +88,7 @@ build/sm_80/top_k_test 50000000 100          # N k; includes wrapper timing
 build/sm_80/gauss_blur_test 17 35 3 5        # image rows/cols, kernel rows/cols
 ```
 
-Compare all six GEMM implementations on the same selected GPU:
+Compare all seven GEMM implementations on the same selected GPU:
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 make check-gemm
@@ -96,7 +96,7 @@ CUDA_VISIBLE_DEVICES=3 make run-gemm-compare  # default: M=N=K=1024, 100 repeats
 CUDA_VISIBLE_DEVICES=3 make run-gemm-compare GEMM_ARGS="256 2048 512 100"
 ```
 
-All six use the same CPU reference, FP16 inputs/output, FP32 accumulation, and
+All seven use the same CPU reference, FP16 inputs/output, FP32 accumulation, and
 row-major `C = alpha * A * B + beta * C` contract. The cuBLAS baseline links with
 `-lcublas` and uses `cublasGemmEx` with FP32 reductions; Tensor Core algorithm
 selection is left to cuBLAS. Its handle is reused on one selected device and the
@@ -107,7 +107,7 @@ CUDA-event batches. It excludes allocation, copies, and CPU validation, but incl
 any host submission gaps between GPU operations. Output guards preserve 256-byte
 alignment; a separate correctness case also tests an unaligned output pointer.
 
-Profile all three WMMA variants and cuBLAS with Nsight Systems:
+Profile all four WMMA variants and cuBLAS with Nsight Systems:
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 make nsys-gemm  # M=N=K=1024, 100 repeats per batch
@@ -116,12 +116,12 @@ make nsys-gemm-stats                  # Reprint the default directory's reports
 make nsys-gemm-stats NSYS_DIR=build/nsys-512
 ```
 
-`nsys-gemm` builds the four benchmarks, profiles them serially even with `make -j`,
+`nsys-gemm` builds the five benchmarks, profiles them serially even with `make -j`,
 then prints kernel and launch/queue/execution summaries in microseconds. Reports
 are saved as `gemm_wmma.nsys-rep`, `gemm_wmma_tiled.nsys-rep`,
-`gemm_wmma_tiled_pipeline.nsys-rep`, and
+`gemm_wmma_tiled_pipeline.nsys-rep`, `gemm_wmma_tiled_pipeline_aligned.nsys-rep`, and
 `gemm_cublas.nsys-rep` under `NSYS_DIR` (default: `build/sm_80/nsys`). Open these in
-the Nsight Systems GUI to compare timelines. Reruns overwrite the four reports;
+the Nsight Systems GUI to compare timelines. Reruns overwrite the five reports;
 use a different `NSYS_DIR` to retain another shape or run. Override `NSYS` for the
 tool path, `NSYS_FLAGS` for collection options, and `NSYS_REPORTS` for stats reports.
 The defaults trace CUDA, NVTX, and OS runtime calls, with CPU sampling and context
@@ -133,7 +133,7 @@ has 507 kernel instances. Stats include warmup/check calls; select the benchmark
 region in the GUI for steady-state comparisons. Tracing can affect timings;
 use the ordinary benchmarks as well when reporting performance.
 
-Profile all six GEMMs with Nsight Compute:
+Profile all seven GEMMs with Nsight Compute:
 
 ```bash
 make -j2 ncu-gemm-build               # Separate binaries with -lineinfo
@@ -191,6 +191,17 @@ validation, and timing results. It is included in `check-gemm`, `check`,
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline GEMM_ARGS="1024 1024 1024 100"
+```
+
+`gemm_wmma_tiled_pipeline_aligned.cu` adds a specialization for complete tiles
+with 16-byte-aligned A/B pointers. It precomputes copy addresses, advances them
+between K chunks, and removes per-copy bounds/alignment checks. The dispatcher
+keeps the generic pipeline for other inputs. See the [aligned pipeline experiment](docs/gemm-wmma-pipeline-aligned.md)
+for dispatch conditions, validation, timings, and counter comparisons. This version
+is included in the same test, comparison, sanitizer, and profiler targets.
+
+```bash
+CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-aligned GEMM_ARGS="1024 1024 1024 100"
 ```
 
 Tests return nonzero on numerical mismatches or CUDA errors. The newer suites

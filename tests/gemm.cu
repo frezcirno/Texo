@@ -161,13 +161,21 @@ int main(int argc, char** argv) {
     passed &= run_case("multi-tile-tail", 65, 129, 67, 0.75f, -0.25f, false, 0);
     passed &= run_case("unaligned-output", 17, 33, 19, 1, 0, false, 0, 1);
     // Aligned strides with misaligned base pointers must avoid 16-byte copies.
-    passed &= run_case("unaligned-A", 32, 64, 96, 1, 0, false, 0, 128, 1, 0);
-    passed &= run_case("unaligned-B", 32, 64, 96, 1, 0, false, 0, 128, 0, 1);
-    passed &= run_case("unaligned-A-B", 32, 64, 96, 0.75f, -0.25f, false, 0, 128, 1, 1);
+    passed &= run_case("unaligned-A", 64, 64, 96, 1, 0, false, 0, 128, 1, 0);
+    passed &= run_case("unaligned-B", 64, 64, 96, 1, 0, false, 0, 128, 0, 1);
+    passed &= run_case("unaligned-A-B", 64, 64, 96, 0.75f, -0.25f, false, 0, 128, 1, 1);
     // Full async groups across two/three K chunks exercise buffer reuse/drain.
     passed &= run_case("two-K-chunks", 64, 64, 64, 0.75f, -0.25f, false, 0);
     passed &= run_case("three-K-chunks", 64, 64, 96, 0.75f, -0.25f, false, 0);
     passed &= run_case("aligned-tail", 65, 72, 72, 1, 0, false, 0);
+    // Exercise the full/aligned dispatcher and independently reject each tail.
+    passed &= run_case("one-K-chunk", 64, 64, 32, 0.75f, -0.25f, false, 0);
+    passed &= run_case("aligned-multiblock", 128, 192, 96, -0.75f, 0.5f, false, 0);
+    passed &= run_case("aligned-unalign-C", 64, 64, 96, 1, 0, false, 0, 1);
+    passed &= run_case("full-output-K-zero", 64, 64, 0, 1, 0.5f, false, 0);
+    passed &= run_case("M-tail-only", 63, 64, 96, 1, 0, false, 0);
+    passed &= run_case("N-tail-only", 64, 63, 96, 1, 0, false, 0);
+    passed &= run_case("K-tail-only", 64, 64, 95, 1, 0, false, 0);
     passed &= run_case("single-row", 1, 35, 31, 0.5f, 0.25f, false, 0);
     passed &= run_case("single-column", 35, 1, 33, -1, 1, false, 0);
     passed &= run_case("alpha-beta", 19, 7, 65, -0.75f, 0.5f, false, 0);
