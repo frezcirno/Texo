@@ -44,12 +44,16 @@ before consuming outputs on the CPU.
 - `mat_vec_mul.cu`: `A[M,N] * x[N] -> y[M]`, float. A warp per row is the default;
   the test also compares a block per row and different block sizes. `nnz` is a
   retained, unused parameter; this is dense storage, not CSR/COO sparse storage.
-- `gemm.cu`, `gemm_tile.cu`, `gemm_wmma.cu`, `gemm_cublas.cu`:
+- `gemm.cu`, `gemm_tile.cu`, `gemm_wmma.cu`, `gemm_wmma_tiled.cu`, `gemm_cublas.cu`:
   row-major `C = alpha * A * B + beta * C`, with `A[M,K]`, `B[K,N]`, `C[M,N]`.
   Inputs and output use FP16 with FP32 accumulation. `C` is read only when
   `beta != 0`. Empty output dimensions are a no-op; K=0 scales C by beta.
-  Variants use scalar arithmetic, shared-memory tiling, WMMA, and cuBLAS,
-  respectively. The cuBLAS baseline uses `cublasGemmEx`, disallows reduced-precision
+  Variants use scalar arithmetic, shared-memory tiling, single-warp WMMA,
+  multi-warp WMMA, and cuBLAS, respectively. Multi-warp WMMA defaults to a 64x64
+  output block with four warps, a K chunk of 32, and 16 half elements of shared-row
+  padding. Each warp computes 32x32 through four accumulator fragments. See
+  [the experiment notes](gemm-wmma-tiling.md) for compile-time tuning parameters.
+  The cuBLAS baseline uses `cublasGemmEx`, disallows reduced-precision
   reductions, and reuses a handle on one selected device per host thread with the
   default stream. It requires linking with `-lcublas`.
 - `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]

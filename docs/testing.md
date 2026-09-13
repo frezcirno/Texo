@@ -68,7 +68,7 @@ or T4 runtime validation.
 - Matrix-vector and GEMM benchmarks warm up and report the median of five batches
   of repeated launches. They reuse input buffers and exclude host/device copies.
   GEMM timing uses `beta=0` to prevent repeated accumulation into C.
-  `make check-gemm` validates scalar, tiled, WMMA, and cuBLAS variants;
+  `make check-gemm` validates scalar, tiled, both WMMA variants, and cuBLAS;
   `make run-gemm-compare GEMM_ARGS="1024 1024 1024 100"` compares their timings.
   All use 256-byte-aligned benchmark buffers, with output guards and a separate
   unaligned correctness case. cuBLAS handle creation happens before timing.

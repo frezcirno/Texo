@@ -156,6 +156,7 @@ int main(int argc, char** argv) {
     passed &= run_case("scalar", 1, 1, 1, 1, 0, false, 0);
     passed &= run_case("tile-aligned", 16, 16, 16, 1, 0, false, 0);
     passed &= run_case("rectangular-tail", 17, 33, 19, 1, 0, false, 0);
+    passed &= run_case("multi-tile-tail", 65, 129, 67, 0.75f, -0.25f, false, 0);
     passed &= run_case("unaligned-output", 17, 33, 19, 1, 0, false, 0, 1);
     passed &= run_case("single-row", 1, 35, 31, 0.5f, 0.25f, false, 0);
     passed &= run_case("single-column", 35, 1, 33, -1, 1, false, 0);

@@ -61,7 +61,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
 | Valid 1D cross-correlation | `src/conv1d.cu` | `make run-conv1d` |
 | Matrix-vector multiplication | `src/mat_vec_mul.cu` | `make run-mat-vec` |
-| FP16 GEMM: scalar, tiled, WMMA, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
+| FP16 GEMM: scalar, tiled, WMMA, multi-warp WMMA, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_wmma_tiled.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
 | Batched FP32 matrix multiplication | `src/batched_mm.cu` | `make run-batched-mm` |
 | Mean categorical cross entropy | `src/cat_ce.cu` | `make run-cat-ce` |
 | Mean squared error with FP64 reduction | `src/mse.cu` | `make run-mse` |
@@ -88,7 +88,7 @@ build/sm_80/top_k_test 50000000 100          # N k; includes wrapper timing
 build/sm_80/gauss_blur_test 17 35 3 5        # image rows/cols, kernel rows/cols
 ```
 
-Compare all four GEMM implementations on the same selected GPU:
+Compare all five GEMM implementations on the same selected GPU:
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 make check-gemm
@@ -96,7 +96,7 @@ CUDA_VISIBLE_DEVICES=3 make run-gemm-compare  # default: M=N=K=1024, 100 repeats
 CUDA_VISIBLE_DEVICES=3 make run-gemm-compare GEMM_ARGS="256 2048 512 100"
 ```
 
-All four use the same CPU reference, FP16 inputs/output, FP32 accumulation, and
+All five use the same CPU reference, FP16 inputs/output, FP32 accumulation, and
 row-major `C = alpha * A * B + beta * C` contract. The cuBLAS baseline links with
 `-lcublas` and uses `cublasGemmEx` with FP32 reductions; Tensor Core algorithm
 selection is left to cuBLAS. Its handle is reused on one selected device and the
@@ -106,6 +106,79 @@ GEMM timing uses aligned buffers, five warmup calls, and the median of five
 CUDA-event batches. It excludes allocation, copies, and CPU validation, but includes
 any host submission gaps between GPU operations. Output guards preserve 256-byte
 alignment; a separate correctness case also tests an unaligned output pointer.
+
+Profile WMMA, multi-warp WMMA, and cuBLAS with Nsight Systems:
+
+```bash
+CUDA_VISIBLE_DEVICES=3 make nsys-gemm  # M=N=K=1024, 100 repeats per batch
+CUDA_VISIBLE_DEVICES=3 make nsys-gemm GEMM_ARGS="512 512 512 100" NSYS_DIR=build/nsys-512
+make nsys-gemm-stats                  # Reprint the default directory's reports
+make nsys-gemm-stats NSYS_DIR=build/nsys-512
+```
+
+`nsys-gemm` builds the three benchmarks, profiles them serially even with `make -j`,
+then prints kernel and launch/queue/execution summaries in microseconds. Reports
+are saved as `gemm_wmma.nsys-rep`, `gemm_wmma_tiled.nsys-rep`, and
+`gemm_cublas.nsys-rep` under `NSYS_DIR` (default: `build/sm_80/nsys`). Open these in
+the Nsight Systems GUI to compare timelines. Reruns overwrite the three reports;
+use a different `NSYS_DIR` to retain another shape or run. Override `NSYS` for the
+tool path, `NSYS_FLAGS` for collection options, and `NSYS_REPORTS` for stats reports.
+The defaults trace CUDA, NVTX, and OS runtime calls, with CPU sampling and context
+switch tracing disabled for environments with restricted profiling permissions.
+
+These reports include initialization, two correctness calls, five warmup calls,
+and five benchmark batches. At 100 repeats, a one-kernel-per-call implementation
+has 507 kernel instances. Stats include warmup/check calls; select the benchmark
+region in the GUI for steady-state comparisons. Tracing can affect timings;
+use the ordinary benchmarks as well when reporting performance.
+
+Profile all five GEMMs with Nsight Compute:
+
+```bash
+make -j2 ncu-gemm-build               # Separate binaries with -lineinfo
+CUDA_VISIBLE_DEVICES=3 make ncu-gemm  # Requires GPU performance-counter access
+make ncu-gemm-stats                  # Re-export existing reports, no GPU access needed
+```
+
+When counters require administrator access, build as the repository owner first.
+Then, from an account with sudo privileges in the same repository directory:
+
+```bash
+sudo -v
+CUDA_VISIBLE_DEVICES=3 make ncu-gemm \
+  NCU_RUN='sudo -n --preserve-env=CUDA_VISIBLE_DEVICES' NCU_DIR=/tmp/texo-ncu
+make ncu-gemm-stats NCU_DIR=/tmp/texo-ncu
+```
+
+Only the profiler is prefixed with `NCU_RUN`; the targets do not change driver
+permissions or system configuration. Use a writable `NCU_DIR` when switching
+accounts. No account names or passwords are stored in the build configuration.
+
+Defaults: `NCU_SET=full`, `NCU_LAUNCH_SKIP=7`, `NCU_LAUNCH_COUNT=1`, and the same
+`GEMM_ARGS` as the other benchmarks. The skip omits two correctness calls and five
+warmups for a custom shape with one kernel per call; use positive M/N/K and repeats.
+Collection is serial, uses kernel replay with cache flushing, and leaves clocks
+unmodified. These timings need not match warm-cache Nsight Systems measurements.
+Override `NCU_FLAGS` to change the replay/cache policy. cuBLAS implementation source
+is unavailable even though custom kernels are built with line information.
+
+`NCU_BIN_DIR` defaults to `build/sm_80/ncu-bin`; `NCU_DIR` defaults to
+`build/sm_80/ncu`. Each variant produces `.ncu-rep`, `.txt`, and `.raw.csv` files;
+`comparison.csv` contains key metrics, one row per captured launch. Python 3 is
+used for the summary. Missing metrics from smaller sets display as N/A. Reruns
+overwrite these files; change `NCU_DIR` to preserve a capture. For a quick run:
+
+```bash
+CUDA_VISIBLE_DEVICES=3 make ncu-gemm GEMM_ARGS="128 128 128 2" \
+  NCU_SET=basic NCU_GEMMS="gemm_wmma gemm_cublas" NCU_DIR=build/ncu-smoke
+```
+
+See [GEMM counter analysis](docs/gemm-ncu-analysis.md) for the measured differences
+between the five implementations and the limits of the collected metrics.
+
+The multi-warp WMMA experiment uses a 64x64 output block, four warps, and a 32x32
+output per warp. See [WMMA tiling experiments](docs/gemm-wmma-tiling.md) for the
+thread mapping, tested configurations, measurements, and tuning commands.
 
 Tests return nonzero on numerical mismatches or CUDA errors. The newer suites
 check CPU references, partial blocks, repeated calls, and output guards. Floating

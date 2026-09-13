@@ -13,9 +13,24 @@ PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test sigmoid_test geglu_test
 BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test rgb2grayscale_test batched_mm_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS)
-GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_cublas_bench
+GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_wmma_tiled_bench gemm_cublas_bench
 PROGRAMS += $(filter-out gemm_bench,$(GEMM_BENCHES))
 GEMM_ARGS ?= 1024 1024 1024 100
+NSYS ?= $(CUDA_HOME)/bin/nsys
+NSYS_DIR ?= $(BIN_DIR)/nsys
+NSYS_FLAGS ?= --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none
+NSYS_REPORTS ?= cuda_gpu_kern_sum,cuda_kern_exec_sum
+NSYS_GEMMS := gemm_wmma gemm_wmma_tiled gemm_cublas
+NCU ?= $(CUDA_HOME)/bin/ncu
+NCU_RUN ?=
+NCU_DIR ?= $(BIN_DIR)/ncu
+NCU_BIN_DIR ?= $(BIN_DIR)/ncu-bin
+NCU_GEMMS ?= $(patsubst %_bench,%,$(GEMM_BENCHES))
+NCU_SET ?= full
+NCU_LAUNCH_SKIP ?= 7
+NCU_LAUNCH_COUNT ?= 1
+NCU_FLAGS ?= --config-file off --replay-mode kernel --clock-control none --cache-control all --import-source yes --target-processes application-only
+PYTHON ?= python3
 BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
 KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(wildcard src/*.cu))
 SUM_OBJECTS := $(BIN_DIR)/sum_manual.o $(BIN_DIR)/sum_cg.o $(BIN_DIR)/sum_cub.o
@@ -27,7 +42,8 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-relu run-leaky-relu run-silu run-swiglu run-clip run-mat-add \
         run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
         run-sigmoid run-geglu run-rgb2grayscale run-batched-mm \
-        run-gemm-tile run-gemm-wmma run-gemm-cublas run-gemm-compare check-gemm
+        run-gemm-tile run-gemm-wmma run-gemm-wmma-tiled run-gemm-cublas run-gemm-compare check-gemm \
+        nsys-gemm nsys-gemm-stats ncu-gemm-build ncu-gemm ncu-gemm-stats
 
 all: $(BINARIES)
 compile-kernels: $(KERNEL_OBJECTS)
@@ -76,6 +92,8 @@ $(BIN_DIR)/gemm_tile_bench: tests/gemm.cu src/gemm_tile.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gemm_wmma_bench: tests/gemm.cu src/gemm_wmma.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/gemm_wmma_tiled_bench: tests/gemm.cu src/gemm_wmma_tiled.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gemm_cublas_bench: tests/gemm.cu src/gemm_cublas.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@ -lcublas
 $(BIN_DIR)/cat_ce_test: tests/cat_ce.cpp src/cat_ce.cu | $(BIN_DIR)
@@ -123,6 +141,8 @@ run-gemm-tile: $(BIN_DIR)/gemm_tile_bench
 	$<
 run-gemm-wmma: $(BIN_DIR)/gemm_wmma_bench
 	$<
+run-gemm-wmma-tiled: $(BIN_DIR)/gemm_wmma_tiled_bench
+	$<
 run-gemm-cublas: $(BIN_DIR)/gemm_cublas_bench
 	$<
 run-gemm-compare: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES))
@@ -133,6 +153,40 @@ check-gemm: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES))
 	@set -e; for binary in $^; do \
 	  echo "$$binary"; "$$binary" --check-only; \
 	done
+# Keep GPU profiling serial even with make -j; compilation may run in parallel.
+nsys-gemm: $(addprefix $(BIN_DIR)/,$(addsuffix _bench,$(NSYS_GEMMS)))
+	mkdir -p "$(NSYS_DIR)"
+	@set -e; for impl in $(NSYS_GEMMS); do \
+	  "$(NSYS)" profile $(NSYS_FLAGS) --force-overwrite=true \
+	    -o "$(NSYS_DIR)/$$impl" "$(BIN_DIR)/$${impl}_bench" $(GEMM_ARGS); \
+	done
+	$(MAKE) nsys-gemm-stats
+nsys-gemm-stats:
+	@set -e; for impl in $(NSYS_GEMMS); do \
+	  "$(NSYS)" stats --force-export=true --timeunit us --report $(NSYS_REPORTS) \
+	    "$(NSYS_DIR)/$$impl.nsys-rep"; \
+	done
+# Build as the current user. NCU_RUN only prefixes the profiler, e.g. sudo.
+ncu-gemm-build:
+	$(MAKE) BIN_DIR="$(NCU_BIN_DIR)" NVCCFLAGS="$(NVCCFLAGS) -lineinfo" \
+	  $(addprefix $(NCU_BIN_DIR)/,$(addsuffix _bench,$(NCU_GEMMS)))
+ncu-gemm: ncu-gemm-build
+	mkdir -p "$(NCU_DIR)"
+	@set -e; for impl in $(NCU_GEMMS); do \
+	  $(NCU_RUN) "$(NCU)" $(NCU_FLAGS) --set $(NCU_SET) \
+	    --launch-skip $(NCU_LAUNCH_SKIP) --launch-count $(NCU_LAUNCH_COUNT) \
+	    --force-overwrite --export "$(NCU_DIR)/$$impl" \
+	    "$(NCU_BIN_DIR)/$${impl}_bench" $(GEMM_ARGS); \
+	done
+	$(MAKE) ncu-gemm-stats
+ncu-gemm-stats:
+	@set -e; for impl in $(NCU_GEMMS); do \
+	  "$(NCU)" --import "$(NCU_DIR)/$$impl.ncu-rep" --page details \
+	    > "$(NCU_DIR)/$$impl.txt"; \
+	  "$(NCU)" --import "$(NCU_DIR)/$$impl.ncu-rep" --page raw --csv --print-units base \
+	    > "$(NCU_DIR)/$$impl.raw.csv"; \
+	done
+	$(PYTHON) scripts/ncu_summary.py "$(NCU_DIR)" $(NCU_GEMMS)
 run-cat-ce: $(BIN_DIR)/cat_ce_test
 	$<
 run-mse: $(BIN_DIR)/mse_test
@@ -186,6 +240,7 @@ check: all
 	$(BIN_DIR)/gemm_bench --check-only
 	$(BIN_DIR)/gemm_tile_bench --check-only
 	$(BIN_DIR)/gemm_wmma_bench --check-only
+	$(BIN_DIR)/gemm_wmma_tiled_bench --check-only
 	$(BIN_DIR)/gemm_cublas_bench --check-only
 	$(BIN_DIR)/cat_ce_test
 	$(BIN_DIR)/mse_test 1025
@@ -215,6 +270,8 @@ check-full: check
 COMPUTE_SANITIZER ?= compute-sanitizer
 sanitize: all
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_bench 17 33 19 0
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_bench 65 129 67 0
+	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_bench 65 129 67 0
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_cublas_bench --check-only
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gauss_blur_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
@@ -234,8 +291,15 @@ help:
 	@echo 'check-full      Also run large MSE and top-k regressions'
 	@echo 'sanitize        Run selected memory/synchronization checks'
 	@echo 'run-<operator>  Run one test/benchmark with default arguments'
-	@echo 'check-gemm      Check scalar, tiled, WMMA, and cuBLAS GEMM'
-	@echo 'run-gemm-compare Compare all four GEMMs; GEMM_ARGS="M N K repeats"'
+	@echo 'check-gemm      Check scalar, tiled, both WMMA variants, and cuBLAS GEMM'
+	@echo 'run-gemm-compare Compare all five GEMMs; GEMM_ARGS="M N K repeats"'
+	@echo 'nsys-gemm       Profile WMMA, tiled WMMA, cuBLAS serially, then print stats'
+	@echo '                Set CUDA_VISIBLE_DEVICES, GEMM_ARGS, NSYS_DIR, NSYS_FLAGS as needed'
+	@echo 'nsys-gemm-stats  Print existing reports in NSYS_DIR (default: $(BIN_DIR)/nsys)'
+	@echo 'ncu-gemm-build  Build all five GEMMs with -lineinfo in NCU_BIN_DIR'
+	@echo 'ncu-gemm        Profile all five serially, then export text/CSV and print a summary'
+	@echo '                Set CUDA_VISIBLE_DEVICES, GEMM_ARGS, NCU_DIR, NCU_SET, NCU_RUN as needed'
+	@echo 'ncu-gemm-stats  Export existing NCU reports and regenerate comparison.csv (no GPU needed)'
 	@echo 'clean           Remove current architecture build directory'
 
 clean:
