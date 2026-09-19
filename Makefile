@@ -18,9 +18,13 @@ GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_wmma_tiled_bench
                 gemm_wmma_tiled_pipeline_aligned_swizzled_bench gemm_wmma_tiled_pipeline_multistage_bench \
                 gemm_wmma_tiled_pipeline_mainloop_bench gemm_wmma_tiled_pipeline_reuse_bench \
                 gemm_wmma_tiled_pipeline_epilogue_bench gemm_wmma_tiled_pipeline_large_bench \
+                gemm_wmma_tiled_pipeline_schedule_bench \
                 gemm_cublas_bench
 PROGRAMS += $(filter-out gemm_bench,$(GEMM_BENCHES))
 GEMM_DYNAMIC_TEST := $(BIN_DIR)/gemm_wmma_tiled_pipeline_large_dynamic_test
+GEMM_SCHEDULE_TESTS := $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_fixed_test \
+                       $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_four_test \
+                       $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_dynamic_test
 GEMM_ARGS ?= 1024 1024 1024 100
 NSYS ?= $(CUDA_HOME)/bin/nsys
 NSYS_DIR ?= $(BIN_DIR)/nsys
@@ -29,7 +33,8 @@ NSYS_REPORTS ?= cuda_gpu_kern_sum,cuda_kern_exec_sum
 NSYS_GEMMS := gemm_wmma gemm_wmma_tiled gemm_wmma_tiled_pipeline gemm_wmma_tiled_pipeline_aligned \
               gemm_wmma_tiled_pipeline_aligned_swizzled gemm_wmma_tiled_pipeline_multistage \
               gemm_wmma_tiled_pipeline_mainloop gemm_wmma_tiled_pipeline_reuse \
-              gemm_wmma_tiled_pipeline_epilogue gemm_wmma_tiled_pipeline_large gemm_cublas
+              gemm_wmma_tiled_pipeline_epilogue gemm_wmma_tiled_pipeline_large \
+              gemm_wmma_tiled_pipeline_schedule gemm_cublas
 NCU ?= $(CUDA_HOME)/bin/ncu
 NCU_RUN ?=
 NCU_DIR ?= $(BIN_DIR)/ncu
@@ -40,6 +45,11 @@ NCU_LAUNCH_SKIP ?= 7
 NCU_LAUNCH_COUNT ?= 1
 NCU_FLAGS ?= --config-file off --replay-mode kernel --clock-control none --cache-control all --import-source yes --target-processes application-only
 PYTHON ?= python3
+# Python dependencies remain optional for the standalone CUDA build.
+WITH_TRITON ?= 0
+TRITON_CUDA_GEMM ?= gemm_wmma_tiled_pipeline_schedule
+TRITON_TEST_ARGS ?= --all-configs
+TRITON_BENCH_ARGS ?=
 BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
 KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(wildcard src/*.cu))
 SUM_OBJECTS := $(BIN_DIR)/sum_manual.o $(BIN_DIR)/sum_cg.o $(BIN_DIR)/sum_cub.o
@@ -56,7 +66,9 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-gemm-wmma-tiled-pipeline-aligned-swizzled run-gemm-wmma-tiled-pipeline-multistage \
         run-gemm-wmma-tiled-pipeline-mainloop run-gemm-wmma-tiled-pipeline-reuse \
         run-gemm-wmma-tiled-pipeline-epilogue run-gemm-wmma-tiled-pipeline-large \
-        nsys-gemm nsys-gemm-stats ncu-gemm-build ncu-gemm ncu-gemm-stats
+        run-gemm-wmma-tiled-pipeline-schedule \
+        nsys-gemm nsys-gemm-stats ncu-gemm-build ncu-gemm ncu-gemm-stats \
+        check-gemm-triton bench-gemm-triton-compare sanitize-gemm-triton
 
 all: $(BINARIES)
 compile-kernels: $(KERNEL_OBJECTS)
@@ -123,6 +135,22 @@ $(BIN_DIR)/gemm_wmma_tiled_pipeline_epilogue_bench: tests/gemm.cu src/gemm_wmma_
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gemm_wmma_tiled_pipeline_large_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_large.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
+$(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_schedule.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+# Small CPU-reference cases must exercise the new mainloop even when automatic
+# dispatch reserves it for larger grids. Cover both two- and four-K-group loops.
+$(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_fixed_test: tests/gemm.cu src/gemm_wmma_tiled_pipeline_schedule.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -DGEMM_AUTO_TILE=0 -DGEMM_BM=128 -DGEMM_BN=128 \
+	  -DGEMM_BK=32 -DGEMM_WM=64 -DGEMM_WN=64 -DGEMM_STAGES=3 \
+	  -DGEMM_MULTISTAGE_MIN_BLOCKS=2 $^ -o $@
+$(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_four_test: tests/gemm.cu src/gemm_wmma_tiled_pipeline_schedule.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -DGEMM_AUTO_TILE=0 -DGEMM_BM=128 -DGEMM_BN=128 \
+	  -DGEMM_BK=32 -DGEMM_WM=64 -DGEMM_WN=64 -DGEMM_STAGES=4 \
+	  -DGEMM_MULTISTAGE_MIN_BLOCKS=2 $^ -o $@
+$(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_dynamic_test: tests/gemm.cu src/gemm_wmma_tiled_pipeline_schedule.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -DGEMM_AUTO_TILE=0 -DGEMM_BM=128 -DGEMM_BN=256 \
+	  -DGEMM_BK=64 -DGEMM_WM=32 -DGEMM_WN=64 -DGEMM_STAGES=2 \
+	  -DGEMM_MULTISTAGE_MIN_BLOCKS=1 $^ -o $@
 # Exercise dynamic storage and a different warp partition even when automatic
 # dispatch retains smaller static tiles. This is a check target, not a baseline.
 $(GEMM_DYNAMIC_TEST): tests/gemm.cu src/gemm_wmma_tiled_pipeline_large.cu | $(BIN_DIR)
@@ -131,6 +159,13 @@ $(GEMM_DYNAMIC_TEST): tests/gemm.cu src/gemm_wmma_tiled_pipeline_large.cu | $(BI
 	  -DGEMM_MULTISTAGE_MIN_BLOCKS=1 $^ -o $@
 $(BIN_DIR)/gemm_cublas_bench: tests/gemm.cu src/gemm_cublas.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@ -lcublas
+# Optional large-shape timings avoid the cubic CPU reference in *_bench.
+# Keep CPU correctness in make check; these validate against cuBLAS first.
+$(BIN_DIR)/gemm%_perf: benchmarks/gemm.cu src/gemm%.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@ -lcublas
+# Optional ctypes adapters retain each standalone solve and its default stream.
+$(BIN_DIR)/gemm%.so: src/gemm%.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -shared -Xcompiler -fPIC -cudart shared $< -o $@ -lcublas
 $(BIN_DIR)/cat_ce_test: tests/cat_ce.cpp src/cat_ce.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/mse_test: tests/mse.cpp src/mse.cu | $(BIN_DIR)
@@ -194,15 +229,31 @@ run-gemm-wmma-tiled-pipeline-epilogue: $(BIN_DIR)/gemm_wmma_tiled_pipeline_epilo
 	$< $(GEMM_ARGS)
 run-gemm-wmma-tiled-pipeline-large: $(BIN_DIR)/gemm_wmma_tiled_pipeline_large_bench
 	$< $(GEMM_ARGS)
+run-gemm-wmma-tiled-pipeline-schedule: $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_bench
+	$< $(GEMM_ARGS)
 run-gemm-cublas: $(BIN_DIR)/gemm_cublas_bench
 	$<
 run-gemm-compare: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES))
 	@set -e; for binary in $^; do \
 	  echo "$$binary"; "$$binary" $(GEMM_ARGS); \
 	done
-check-gemm: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES)) $(GEMM_DYNAMIC_TEST)
+check-gemm: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES)) $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	@set -e; for binary in $^; do \
 	  echo "$$binary"; "$$binary" --check-only; \
+	done
+ifeq ($(WITH_TRITON),1)
+	$(MAKE) check-gemm-triton
+endif
+check-gemm-triton: $(BIN_DIR)/gemm_cublas_bench
+	$(PYTHON) tests/gemm_triton.py --cases-binary $< $(TRITON_TEST_ARGS)
+bench-gemm-triton-compare: $(BIN_DIR)/$(TRITON_CUDA_GEMM).so $(BIN_DIR)/gemm_cublas.so
+	$(PYTHON) benchmarks/gemm_triton.py --bin-dir "$(BIN_DIR)" --cuda "$(TRITON_CUDA_GEMM)" \
+	  --output "$(BIN_DIR)/triton-comparison.csv" $(TRITON_BENCH_ARGS)
+sanitize-gemm-triton: $(BIN_DIR)/gemm_cublas_bench
+	@set -e; for tool in memcheck racecheck synccheck; do \
+	  $(COMPUTE_SANITIZER) --tool $$tool --error-exitcode 1 \
+	    $(PYTHON) tests/gemm_triton.py --cases-binary $< --all-configs \
+	    --case multi-tile-tail --case unaligned-A-B --case ab10-nan-K0; \
 	done
 # Keep GPU profiling serial even with make -j; compilation may run in parallel.
 nsys-gemm: $(addprefix $(BIN_DIR)/,$(addsuffix _bench,$(NSYS_GEMMS)))
@@ -280,7 +331,7 @@ run-batched-mm: $(BIN_DIR)/batched_mm_test
 	$<
 
 # Small reproducible GPU checks. Every executable returns nonzero on failure.
-check: all $(GEMM_DYNAMIC_TEST)
+check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/reduce_bench 1025 2
 	$(BIN_DIR)/max_bench 1025 2
 	$(BIN_DIR)/softmax_bench 1025 2 1
@@ -301,6 +352,8 @@ check: all $(GEMM_DYNAMIC_TEST)
 	$(BIN_DIR)/gemm_wmma_tiled_pipeline_epilogue_bench --check-only
 	$(BIN_DIR)/gemm_wmma_tiled_pipeline_large_bench --check-only
 	$(GEMM_DYNAMIC_TEST) --check-only
+	$(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_bench --check-only
+	@set -e; for binary in $(GEMM_SCHEDULE_TESTS); do "$$binary" --check-only; done
 	$(BIN_DIR)/gemm_cublas_bench --check-only
 	$(BIN_DIR)/cat_ce_test
 	$(BIN_DIR)/mse_test 1025
@@ -321,6 +374,9 @@ check: all $(GEMM_DYNAMIC_TEST)
 	$(BIN_DIR)/geglu_test
 	$(BIN_DIR)/rgb2grayscale_test
 	$(BIN_DIR)/batched_mm_test
+ifeq ($(WITH_TRITON),1)
+	$(MAKE) check-gemm-triton
+endif
 
 # Large reduction regressions, including the LeetGPU top-k performance shape.
 check-full: check
@@ -328,7 +384,7 @@ check-full: check
 	$(BIN_DIR)/top_k_test 50000000 100
 
 COMPUTE_SANITIZER ?= compute-sanitizer
-sanitize: all $(GEMM_DYNAMIC_TEST)
+sanitize: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_bench 17 33 19 0
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_bench 65 129 67 0
 	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_bench 65 129 67 0
@@ -359,6 +415,11 @@ sanitize: all $(GEMM_DYNAMIC_TEST)
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(GEMM_DYNAMIC_TEST) --check-only
 	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(GEMM_DYNAMIC_TEST) --check-only
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(GEMM_DYNAMIC_TEST) --check-only
+	@set -e; for binary in $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_bench $(GEMM_SCHEDULE_TESTS); do \
+	  for tool in memcheck racecheck synccheck; do \
+	    $(COMPUTE_SANITIZER) --tool $$tool --error-exitcode 1 "$$binary" --check-only; \
+	  done; \
+	done
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_cublas_bench --check-only
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gauss_blur_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
@@ -369,6 +430,9 @@ sanitize: all $(GEMM_DYNAMIC_TEST)
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/mse_test 257
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049
+ifeq ($(WITH_TRITON),1)
+	$(MAKE) sanitize-gemm-triton
+endif
 
 help:
 	@echo 'make [-j2] [NVCC=/path/to/nvcc] [NVCC_ARCH=sm_80|sm_75]'
@@ -379,7 +443,7 @@ help:
 	@echo 'sanitize        Run selected memory/synchronization checks'
 	@echo 'run-<operator>  Run one test/benchmark with default arguments'
 	@echo 'check-gemm      Check scalar, tiled, all WMMA variants, and cuBLAS GEMM'
-	@echo 'run-gemm-compare Compare all thirteen GEMMs; GEMM_ARGS="M N K repeats"'
+	@echo 'run-gemm-compare Compare all fourteen GEMMs; GEMM_ARGS="M N K repeats"'
 	@echo 'run-gemm-wmma-tiled-pipeline Run async/double-buffered WMMA; uses GEMM_ARGS'
 	@echo 'run-gemm-wmma-tiled-pipeline-aligned Run WMMA with a full/aligned fast path; uses GEMM_ARGS'
 	@echo 'run-gemm-wmma-tiled-pipeline-aligned-swizzled Run XOR shared-layout GEMM; uses GEMM_ARGS'
@@ -388,11 +452,18 @@ help:
 	@echo 'run-gemm-wmma-tiled-pipeline-reuse Run GEMM with the 96x128 reuse tile; uses GEMM_ARGS'
 	@echo 'run-gemm-wmma-tiled-pipeline-epilogue Run GEMM with alpha=1/beta=0 specialization; uses GEMM_ARGS'
 	@echo 'run-gemm-wmma-tiled-pipeline-large Run large-tile/dynamic-shared GEMM experiments; uses GEMM_ARGS'
+	@echo 'run-gemm-wmma-tiled-pipeline-schedule Run distributed GEMM mainloop; uses GEMM_ARGS'
+	@echo 'gemm*_perf      Optional large-shape binaries in BIN_DIR; M N K [iterations|--profile]'
+	@echo 'check-gemm-triton Reuse CUDA GEMM cases for Triton, plus all autotune candidates'
+	@echo '                 Set PYTHON to a CUDA PyTorch/Triton environment; WITH_TRITON=1 includes it in check/check-gemm'
+	@echo 'bench-gemm-triton-compare Compare Triton, CUDA schedule, and cuBLAS on identical buffers'
+	@echo '                 TRITON_BENCH_ARGS="--shape M N K [--verify-only]"; TRITON_CUDA_GEMM selects the CUDA source'
+	@echo 'sanitize-gemm-triton Check Triton tails/unaligned pointers with all three sanitizer tools'
 	@echo 'nsys-gemm       Profile all WMMA variants and cuBLAS serially, then print stats'
 	@echo '                Set CUDA_VISIBLE_DEVICES, GEMM_ARGS, NSYS_DIR, NSYS_FLAGS as needed'
 	@echo 'nsys-gemm-stats  Print existing reports in NSYS_DIR (default: $(BIN_DIR)/nsys)'
-	@echo 'ncu-gemm-build  Build all thirteen GEMMs with -lineinfo in NCU_BIN_DIR'
-	@echo 'ncu-gemm        Profile all thirteen serially, then export text/CSV and print a summary'
+	@echo 'ncu-gemm-build  Build all fourteen GEMMs with -lineinfo in NCU_BIN_DIR'
+	@echo 'ncu-gemm        Profile all fourteen serially, then export text/CSV and print a summary'
 	@echo '                Set CUDA_VISIBLE_DEVICES, GEMM_ARGS, NCU_DIR, NCU_SET, NCU_RUN as needed'
 	@echo 'ncu-gemm-stats  Export existing NCU reports and regenerate comparison.csv (no GPU needed)'
 	@echo 'clean           Remove current architecture build directory'

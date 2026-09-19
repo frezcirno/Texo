@@ -89,6 +89,17 @@ before consuming outputs on the CPU.
   block/warp tiles with dynamic shared input storage above 48 KiB. Unsupported
   shared-memory requirements fall back to the generic pipeline. See the
   [large-tile notes](gemm-wmma-large.md) for configuration and experiments.
+- `gemm_wmma_tiled_pipeline_schedule.cu`: the same FP16 contract, with distributed
+  asynchronous copies, interleaved operand loads, and compact address generation.
+  Measured A800 grid bands select a 128x128 tile with three or four stages;
+  other shapes and general alpha/beta retain the previous dispatcher. See the
+  [scheduling notes](gemm-wmma-schedule.md) for controls and measurements.
+- `gemm.triton.py`: the same row-major FP16 A[M,K], B[K,N], C[M,N] contract,
+  FP32 accumulation, and in-place `C = alpha*A*B + beta*C`. Pass contiguous CUDA
+  tensors with the stated dimensions. Masks handle M/N/K tails and unaligned
+  bases; M/N=0 does no work, K=0 scales C, and beta=0 skips reading old C.
+  Seven tile/warp/stage configurations are autotuned. See the
+  [Triton integration](gemm-triton.md) for checks and comparison scope.
 - `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]
   and C[BATCH,M,N], using contiguous row-major storage without broadcasting or
   transposes. The current kernel adds into C; callers must clear C before each

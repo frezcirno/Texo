@@ -15,6 +15,8 @@ operator separately; the Makefile renames entry points when comparing variants.
   with the toolkit; no external C++ dependencies are vendored.
 - An NVIDIA GPU and compatible driver to run tests. Compilation alone needs no GPU.
 - `compute-sanitizer` for the optional memory and synchronization checks.
+- Optional Triton targets require a Python environment with CUDA-enabled PyTorch
+  and Triton; select it with `PYTHON=/path/to/python`.
 
 The default target is `sm_80` (A100/A800). Use `sm_75` for T4. Build artifacts are
 kept in separate directories for each architecture.
@@ -61,8 +63,9 @@ after changing compiler flags or toolkit while retaining the same build director
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
 | Valid 1D cross-correlation | `src/conv1d.cu` | `make run-conv1d` |
 | Matrix-vector multiplication | `src/mat_vec_mul.cu` | `make run-mat-vec` |
-| FP16 GEMM: scalar, tiled, WMMA, multi-warp WMMA, pipelined WMMA, aligned pipeline, swizzled pipeline, multistage pipeline, mainloop scheduling, larger reuse tile, specialized epilogue, large-tile experiments, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_wmma_tiled.cu`, `src/gemm_wmma_tiled_pipeline.cu`, `src/gemm_wmma_tiled_pipeline_aligned.cu`, `src/gemm_wmma_tiled_pipeline_aligned_swizzled.cu`, `src/gemm_wmma_tiled_pipeline_multistage.cu`, `src/gemm_wmma_tiled_pipeline_mainloop.cu`, `src/gemm_wmma_tiled_pipeline_reuse.cu`, `src/gemm_wmma_tiled_pipeline_epilogue.cu`, `src/gemm_wmma_tiled_pipeline_large.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
+| FP16 GEMM: scalar, tiled, WMMA, multi-warp WMMA, pipelined WMMA, aligned pipeline, swizzled pipeline, multistage pipeline, mainloop scheduling, larger reuse tile, specialized epilogue, large-tile experiments, distributed mainloop, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_wmma_tiled.cu`, `src/gemm_wmma_tiled_pipeline.cu`, `src/gemm_wmma_tiled_pipeline_aligned.cu`, `src/gemm_wmma_tiled_pipeline_aligned_swizzled.cu`, `src/gemm_wmma_tiled_pipeline_multistage.cu`, `src/gemm_wmma_tiled_pipeline_mainloop.cu`, `src/gemm_wmma_tiled_pipeline_reuse.cu`, `src/gemm_wmma_tiled_pipeline_epilogue.cu`, `src/gemm_wmma_tiled_pipeline_large.cu`, `src/gemm_wmma_tiled_pipeline_schedule.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
 | Batched FP32 matrix multiplication | `src/batched_mm.cu` | `make run-batched-mm` |
+| FP16 GEMM in Triton | `src/gemm.triton.py` | `make check-gemm-triton`, `make bench-gemm-triton-compare` |
 | Mean categorical cross entropy | `src/cat_ce.cu` | `make run-cat-ce` |
 | Mean squared error with FP64 reduction | `src/mse.cu` | `make run-mse` |
 | Zero-padded blur / cross-correlation | `src/gauss_blur.cu` | `make run-gauss-blur` |
@@ -76,6 +79,11 @@ build; the working implementation is in `src/top_k.cu`. A standalone reduction c
 
 See [operator contracts and limitations](docs/operators.md) before reusing a kernel.
 
+The optional [Triton GEMM integration](docs/gemm-triton.md) reuses the CUDA
+correctness cases and compares Triton, CUDA schedule, and cuBLAS on identical
+buffers. `make check WITH_TRITON=1` includes its checks; the default CUDA build
+does not require Python packages.
+
 ## Running individual tests
 
 ```bash
@@ -88,7 +96,7 @@ build/sm_80/top_k_test 50000000 100          # N k; includes wrapper timing
 build/sm_80/gauss_blur_test 17 35 3 5        # image rows/cols, kernel rows/cols
 ```
 
-Compare all thirteen GEMM implementations on the same selected GPU:
+Compare all fourteen GEMM implementations on the same selected GPU:
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 make check-gemm
@@ -96,7 +104,7 @@ CUDA_VISIBLE_DEVICES=3 make run-gemm-compare  # default: M=N=K=1024, 100 repeats
 CUDA_VISIBLE_DEVICES=3 make run-gemm-compare GEMM_ARGS="256 2048 512 100"
 ```
 
-All thirteen use the same CPU reference, FP16 inputs/output, FP32 accumulation, and
+All fourteen use the same CPU reference, FP16 inputs/output, FP32 accumulation, and
 row-major `C = alpha * A * B + beta * C` contract. The cuBLAS baseline links with
 `-lcublas` and uses `cublasGemmEx` with FP32 reductions; Tensor Core algorithm
 selection is left to cuBLAS. Its handle is reused on one selected device and the
@@ -122,7 +130,8 @@ are saved as `gemm_wmma.nsys-rep`, `gemm_wmma_tiled.nsys-rep`,
 `gemm_wmma_tiled_pipeline.nsys-rep`, `gemm_wmma_tiled_pipeline_aligned.nsys-rep`,
 `gemm_wmma_tiled_pipeline_aligned_swizzled.nsys-rep`, `gemm_wmma_tiled_pipeline_multistage.nsys-rep`,
 `gemm_wmma_tiled_pipeline_mainloop.nsys-rep`, `gemm_wmma_tiled_pipeline_reuse.nsys-rep`,
-`gemm_wmma_tiled_pipeline_epilogue.nsys-rep`, `gemm_wmma_tiled_pipeline_large.nsys-rep`, and
+`gemm_wmma_tiled_pipeline_epilogue.nsys-rep`, `gemm_wmma_tiled_pipeline_large.nsys-rep`,
+`gemm_wmma_tiled_pipeline_schedule.nsys-rep`, and
 `gemm_cublas.nsys-rep` under `NSYS_DIR` (default: `build/sm_80/nsys`). Open these in
 the Nsight Systems GUI to compare timelines. Reruns overwrite the eleven reports;
 use a different `NSYS_DIR` to retain another shape or run. Override `NSYS` for the
@@ -136,7 +145,7 @@ has 507 kernel instances. Stats include warmup/check calls; select the benchmark
 region in the GUI for steady-state comparisons. Tracing can affect timings;
 use the ordinary benchmarks as well when reporting performance.
 
-Profile all thirteen GEMMs with Nsight Compute:
+Profile all fourteen GEMMs with Nsight Compute:
 
 ```bash
 make -j2 ncu-gemm-build               # Separate binaries with -lineinfo
@@ -235,6 +244,12 @@ for the three-stage investigation and measured configuration tradeoffs.
 `check-gemm`, `check`, and `sanitize` also exercise a forced 96 KiB /
 16-warp configuration independently of the automatic dispatcher.
 
+`gemm_wmma_tiled_pipeline_schedule.cu` distributes copies and fragment loads
+through MMA and reduces address bookkeeping. It selects the new path in measured
+A800 grid bands and retains previous kernels elsewhere. See the
+[scheduling experiment](docs/gemm-wmma-schedule.md) for cumulative step controls,
+NCU evidence, and optional large-shape `*_perf` targets using a cuBLAS reference.
+
 ```bash
 CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-aligned-swizzled GEMM_ARGS="1024 1024 1024 100"
 CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-multistage GEMM_ARGS="2048 2048 2048 100"
@@ -242,6 +257,7 @@ CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-mainloop GEMM_ARGS="102
 CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-reuse GEMM_ARGS="1536 1536 1536 100"
 CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-epilogue GEMM_ARGS="1024 1024 1024 100"
 CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-large GEMM_ARGS="4096 4096 4096 100"
+CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-schedule GEMM_ARGS="1024 1024 1024 100"
 ```
 
 Tests return nonzero on numerical mismatches or CUDA errors. The newer suites

@@ -48,6 +48,19 @@ categorical cross entropy, MSE, top-k and interleave,
 and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.
 
+## Optional Triton GEMM
+
+The optional Triton GEMM runner consumes `gemm_cublas_bench --list-cases`,
+which exports the CUDA suite's 57 cases as JSON lines without initializing a GPU.
+Run `make check-gemm-triton PYTHON=/path/to/python`, or include it in the main
+suite with `make check WITH_TRITON=1 PYTHON=/path/to/python`. The runner uses an
+independent CPU double reference, tests two consecutive calls, input preservation
+and output guards, and checks all seven autotune candidates on representative
+cases. `make sanitize-gemm-triton` selects tail, misalignment and K=0 cases for
+memcheck/racecheck/synccheck; `WITH_TRITON=1` also includes it in `make sanitize`.
+See [Triton GEMM](gemm-triton.md) for the separate performance comparison target
+and its Python submission overhead.
+
 ## Architecture and device selection
 
 ```bash
@@ -88,9 +101,16 @@ or T4 runtime validation.
   `gemm_wmma_tiled_pipeline_large_dynamic_test` runs the same suite using
   a 128x256 block, 32x64 warp, four stages, and 96 KiB dynamic shared memory.
   It is included in `check-gemm`, `check`, and all three sanitizer tools;
-  it is separate from the thirteen default benchmark implementations.
+  it is separate from the fourteen default benchmark implementations.
+  The scheduled version adds forced 128x128/BK32 three- and four-stage tests,
+  and a 96 KiB 128x256/BK64 two-stage test with 16 warps. Five further cases
+  cover BK64 one/three/nine-chunk drains and the two automatic grid bands.
+  The shared GEMM suite has 57 cases; all forced tests participate in check
+  and memcheck/racecheck/synccheck. Large-shape optional `*_perf` targets use
+  `benchmarks/gemm.cu` with a cuBLAS FP32-reduction reference; they supplement
+  the independent CPU checks rather than replacing them.
   `sanitize` runs memcheck,
-  racecheck, and synccheck over the complete suite for all eight pipelined versions.
+  racecheck, and synccheck over the complete suite for all nine pipelined versions.
   All use 256-byte-aligned benchmark buffers, with output guards and a separate
   unaligned correctness case. cuBLAS handle creation happens before timing.
   CUDA-event batches include any host submission gaps between GPU operations.

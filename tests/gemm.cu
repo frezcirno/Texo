@@ -13,6 +13,9 @@
 
 extern "C" void solve(const half*, const half*, half*, int, int, int, float, float);
 
+// Export the same cases for the optional Python/Triton runner, without a GPU.
+static bool list_cases = false;
+
 #define CUDA_CHECK(call) do { \
   cudaError_t error = (call); \
   if (error != cudaSuccess) { \
@@ -27,6 +30,14 @@ static bool run_case(const char* name, int m, int n, int k,
                      float alpha, float beta, bool ones, int repeats,
                      size_t c_offset = 128, size_t a_offset = 0,
                      size_t b_offset = 0, bool nan_c = false) {
+  if (list_cases) {
+    std::printf("{\"name\":\"%s\",\"m\":%d,\"n\":%d,\"k\":%d,"
+                "\"alpha\":%#.9g,\"beta\":%#.9g,\"ones\":%s,\"c_offset\":%zu,"
+                "\"a_offset\":%zu,\"b_offset\":%zu,\"nan_c\":%s}\n",
+                name, m, n, k, alpha, beta, ones ? "true" : "false",
+                c_offset, a_offset, b_offset, nan_c ? "true" : "false");
+    return true;
+  }
   size_t na = size_t(m) * k, nb = size_t(k) * n, nc = size_t(m) * n;
   // A 256-byte prefix preserves cudaMalloc alignment while guarding C.
   // Keep a separate offset=1 correctness case for unaligned output buffers.
@@ -129,16 +140,19 @@ static bool run_case(const char* name, int m, int n, int k,
 }
 
 int main(int argc, char** argv) {
-  bool check_only = argc == 2 && std::string(argv[1]) == "--check-only";
+  list_cases = argc == 2 && std::string(argv[1]) == "--list-cases";
+  bool check_only = list_cases || (argc == 2 && std::string(argv[1]) == "--check-only");
   if (argc != 1 && !check_only && argc != 4 && argc != 5) {
-    std::fprintf(stderr, "Usage: %s [M N K [repeats]] | --check-only\n", argv[0]);
+    std::fprintf(stderr, "Usage: %s [M N K [repeats]] | --check-only | --list-cases\n", argv[0]);
     return 2;
   }
-  cudaDeviceProp prop;
-  CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
-  std::printf("GPU: %s\nFP16 inputs/output, CPU double reference; atol=0.01 rtol=0.01\n", prop.name);
-  std::puts("Timing: warmed inputs, beta=0, median of 5 batches; no allocation/copies included.");
-  std::puts("Benchmark buffers are 256-byte aligned; includes host submission gaps between kernels.");
+  if (!list_cases) {
+    cudaDeviceProp prop;
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+    std::printf("GPU: %s\nFP16 inputs/output, CPU double reference; atol=0.01 rtol=0.01\n", prop.name);
+    std::puts("Timing: warmed inputs, beta=0, median of 5 batches; no allocation/copies included.");
+    std::puts("Benchmark buffers are 256-byte aligned; includes host submission gaps between kernels.");
+  }
   bool passed = true;
   if (argc >= 4) {
     try {
@@ -215,6 +229,14 @@ int main(int argc, char** argv) {
     passed &= run_case("large-four", 256, 256, 128, 0.75f, -0.25f, false, 0, 1);
     passed &= run_case("large-five-nan", 256, 256, 160, 1, -0.0f, false, 0, 1, 0, 0, true);
     passed &= run_case("large-seven", 256, 256, 224, -0.75f, 0.5f, false, 0);
+    // The scheduled dynamic test uses BK=64 and two stages. Cover its short
+    // prologue and repeated ring wraps with both epilogues and scalar stores.
+    passed &= run_case("schedule-one-nan", 256, 256, 64, 1, 0, false, 0, 128, 0, 0, true);
+    passed &= run_case("schedule-three", 256, 256, 192, 0.75f, -0.25f, false, 0, 1);
+    passed &= run_case("schedule-nine-nan", 256, 256, 576, 1, -0.0f, false, 0, 1, 0, 0, true);
+    // Enter both scheduled automatic grid bands with a manageable CPU sum.
+    passed &= run_case("schedule-auto-small", 1024, 1024, 128, 1, 0, false, 0, 1, 0, 0, true);
+    passed &= run_case("schedule-auto-medium", 1024, 4096, 128, 1, 0, false, 0);
     passed &= run_case("single-row", 1, 35, 31, 0.5f, 0.25f, false, 0);
     passed &= run_case("single-column", 35, 1, 33, -1, 1, false, 0);
     passed &= run_case("alpha-beta", 19, 7, 65, -0.75f, 0.5f, false, 0);
@@ -226,6 +248,6 @@ int main(int argc, char** argv) {
     passed &= run_case("random-long-K", 9, 17, 1025, 1, 0, false, 0);
     passed &= run_case("benchmark", 128, 128, 128, 1, 0, false, check_only ? 0 : 20);
   }
-  std::puts(passed ? "ALL PASSED" : "FAILED (see cases above)");
+  if (!list_cases) std::puts(passed ? "ALL PASSED" : "FAILED (see cases above)");
   return passed ? 0 : 1;
 }

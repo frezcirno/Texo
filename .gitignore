@@ -7,6 +7,9 @@
 *.ptx
 *.cubin
 *.fatbin
+*.so
+__pycache__/
+*.pyc
 /src/reduce_max_bench
 
 # Local tools and profiler captures

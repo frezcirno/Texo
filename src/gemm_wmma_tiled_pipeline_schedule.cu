@@ -1,6 +1,15 @@
-// Standalone successor to gemm_wmma_tiled_pipeline_epilogue.cu.
-// Larger block/warp tiles with optional dynamic shared input storage.
-// Explicit tile overrides select one configuration instead of automatic tiles.
+// Standalone successor to gemm_wmma_tiled_pipeline_large.cu.
+// Controlled mainloop experiments: distributed copies, operand scheduling,
+// and address generation. Tile overrides retain the previous contract.
+#ifndef GEMM_SCHEDULE
+#define GEMM_SCHEDULE 3
+#endif
+#ifndef GEMM_INTERLEAVE_LOADS
+#define GEMM_INTERLEAVE_LOADS 1
+#endif
+#ifndef GEMM_ADDRESS_MODE
+#define GEMM_ADDRESS_MODE (GEMM_SCHEDULE >= 3 ? 2 : 0)
+#endif
 #ifndef GEMM_AUTO_TILE
 #if defined(GEMM_BM) || defined(GEMM_BN) || defined(GEMM_BK) ||                \
     defined(GEMM_WM) || defined(GEMM_WN) || defined(GEMM_STAGES)
@@ -252,19 +261,26 @@ __device__ __forceinline__ int swizzled_offset(int row, int col) {
   return (row * COLS + col) ^ ((row & 7) * 8);
 }
 
-template <int ROWS, int COLS, int THREADS> struct SwizzledInputTile {
+template <int ROWS, int COLS, int THREADS, int ADDRESS_MODE>
+struct SwizzledInputTile {
   static constexpr int PACKS = ROWS * COLS / 8;
   static constexpr int COPIES = (PACKS + THREADS - 1) / THREADS;
+  static constexpr bool COMPACT =
+      ADDRESS_MODE >= 2 && THREADS % (COLS / 8) == 0;
   const half *source[COPIES];
+  size_t row_step;
   int destination[COPIES];
   __device__ __forceinline__ void init(const half *input, int stride,
                                        size_t row0, size_t col0) {
+    if (COMPACT)
+      row_step = size_t(stride) * (THREADS / (COLS / 8));
 #pragma unroll
     for (int i = 0; i < COPIES; ++i) {
       const int pack = int(threadIdx.x) + i * THREADS;
       if (PACKS % THREADS == 0 || pack < PACKS) {
         const int row = pack / (COLS / 8), col = (pack % (COLS / 8)) * 8;
-        source[i] = input + (row0 + row) * size_t(stride) + col0 + col;
+        if (!COMPACT || i == 0)
+          source[i] = input + (row0 + row) * size_t(stride) + col0 + col;
         destination[i] = swizzled_offset<COLS>(row, col);
       }
     }
@@ -274,13 +290,38 @@ template <int ROWS, int COLS, int THREADS> struct SwizzledInputTile {
     for (int i = 0; i < COPIES; ++i) {
       const int pack = int(threadIdx.x) + i * THREADS;
       if (PACKS % THREADS == 0 || pack < PACKS) {
-        source[i] += advance;
+        if (!COMPACT || i == 0)
+          source[i] += advance;
+        const half *src = COMPACT ? source[0] + i * row_step : source[i];
 #if __CUDA_ARCH__ >= 800
-        __pipeline_memcpy_async(tile + destination[i], source[i], 16);
+        __pipeline_memcpy_async(tile + destination[i], src, 16);
 #else
 #pragma unroll
         for (int e = 0; e < 8; ++e)
-          tile[destination[i] + e] = source[i][e];
+          tile[destination[i] + e] = src[e];
+#endif
+      }
+    }
+  }
+  // Each copy belongs to exactly one group. The unrolled caller supplies a
+  // constant group, so inactive copies and their pointer updates disappear.
+  template <int GROUPS>
+  __device__ __forceinline__ void copy_group(half *tile, size_t advance,
+                                            int group) {
+#pragma unroll
+    for (int i = 0; i < COPIES; ++i) {
+      const int pack = int(threadIdx.x) + i * THREADS;
+      if (i * GROUPS / COPIES == group &&
+          (PACKS % THREADS == 0 || pack < PACKS)) {
+        if (!COMPACT || i == 0)
+          source[i] += advance;
+        const half *src = COMPACT ? source[0] + i * row_step : source[i];
+#if __CUDA_ARCH__ >= 800
+        __pipeline_memcpy_async(tile + destination[i], src, 16);
+#else
+#pragma unroll
+        for (int e = 0; e < 8; ++e)
+          tile[destination[i] + e] = src[e];
 #endif
       }
     }
@@ -306,6 +347,23 @@ __device__ __forceinline__ void load_swizzled_b(uint32_t (&r)[4],
       : "r"(address)
       : "memory");
 }
+// Use the documented PTX fragment mapping, independently of WMMA's opaque
+// fragment representation. Each register packs two FP16 values.
+__device__ __forceinline__ void load_swizzled_a(uint32_t (&r)[4],
+                                                uint32_t address) {
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
+               : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
+               : "r"(address)
+               : "memory");
+}
+__device__ __forceinline__ void load_swizzled_b(uint32_t (&r)[4],
+                                                uint32_t address) {
+  asm volatile(
+      "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
+      : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
+      : "r"(address)
+      : "memory");
+}
 __device__ __forceinline__ void
 mma_swizzled(float (&d)[4], const uint32_t (&a)[4], const uint32_t *b) {
 #if __CUDA_ARCH__ >= 800
@@ -325,6 +383,44 @@ mma_swizzled(float (&d)[4], const uint32_t (&a)[4], const uint32_t *b) {
 #endif
 }
 
+// The XOR affects only low lane/column bits. Whole 16-row fragments and
+// whole stages advance above those bits; do shared address arithmetic in u32.
+template <int BM, int BN, int BK, int ADDRESS_MODE>
+struct ScheduledOperands {
+  half (*at)[BM * BK];
+  half (*bt)[BK * BN];
+  int warp_m, warp_n, lane;
+  uint32_t base_a, base_b, offset_a, offset_b;
+  __device__ __forceinline__ void init(half (*a)[BM * BK], half (*b)[BK * BN],
+                                       int m, int n, int l) {
+    at = a; bt = b; warp_m = m; warp_n = n; lane = l;
+    if (ADDRESS_MODE > 0) {
+      base_a = static_cast<uint32_t>(__cvta_generic_to_shared(a));
+      base_b = static_cast<uint32_t>(__cvta_generic_to_shared(b));
+      offset_a = 2 * swizzled_offset<BK>(m + l % 16, (l / 16) * 8);
+      offset_b = 2 * swizzled_offset<BN>(l % 16, n + (l / 16) * 8);
+    }
+  }
+  __device__ __forceinline__ void load_a(uint32_t (&r)[4], int stage,
+                                         int k, int i) const {
+    if (ADDRESS_MODE > 0)
+      load_swizzled_a(r, base_a + stage * (2 * BM * BK) +
+          (offset_a ^ uint32_t(k * 32)) + i * (32 * BK));
+    else
+      load_swizzled_a(r, at[stage] + swizzled_offset<BK>(
+          warp_m + i * 16 + lane % 16, k * 16 + (lane / 16) * 8));
+  }
+  __device__ __forceinline__ void load_b(uint32_t (&r)[4], int stage,
+                                         int k, int j) const {
+    if (ADDRESS_MODE > 0)
+      load_swizzled_b(r, base_b + stage * (2 * BK * BN) +
+          (offset_b ^ uint32_t(j * 32)) + k * (32 * BN));
+    else
+      load_swizzled_b(r, bt[stage] + swizzled_offset<BN>(
+          k * 16 + lane % 16, warp_n + j * 16 + (lane / 16) * 8));
+  }
+};
+
 // Give BK=64 more copy-address/operand registers than the BK=32 path.
 // Four is a compiler register target, not a runtime residency promise.
 #ifndef GEMM_MULTISTAGE_MIN_BLOCKS
@@ -338,23 +434,20 @@ mma_swizzled(float (&d)[4], const uint32_t (&a)[4], const uint32_t *b) {
 #endif
 
 template <bool UNIT_ALPHA_ZERO_BETA, int BM, int BN, int BK, int WM, int WN,
-          int STAGES>
+          int STAGES, int SCHEDULE>
 __global__ __launch_bounds__(
     (BM / WM) * (BN / WN) * 32,
     GEMM_MULTISTAGE_MIN_BLOCKS > 0
         ? GEMM_MULTISTAGE_MIN_BLOCKS
         : ((BM / WM) * (BN / WN) == 4
-               ? (BM == 64 && BN == 64
-                      ? (BK == 64 ? 4 : 5)
-                      : ((BM == 96 || BM == 128) && BN == 128 ? 2 : 3))
-               : 2)) void gemm_wmma_tiled_pipeline_large(const half
-                                                             *__restrict__ A,
-                                                         const half
-                                                             *__restrict__ B,
-                                                         half *__restrict__ C,
-                                                         int M, int N, int K,
-                                                         float alpha,
-                                                         float beta) {
+               ? (BM == 64 && BN == 64 ? (BK == 64 ? 4 : 5)
+                                       : ((BM == 96 || BM == 128) && BN == 128 ? 2 : 3))
+               : 2)) void gemm_wmma_tiled_pipeline_schedule(
+    const half *__restrict__ A, const half *__restrict__ B,
+    half *__restrict__ C, int M, int N, int K, float alpha, float beta) {
+  static_assert(SCHEDULE >= 0 && SCHEDULE <= 3, "Schedule mode 0..3");
+  constexpr int ADDRESS_MODE = SCHEDULE > 0 ? GEMM_ADDRESS_MODE : 0;
+  static_assert(ADDRESS_MODE >= 0 && ADDRESS_MODE <= 2, "Address mode 0..2");
   static_assert(BM > 0 && BN > 0 && BK > 0 && WM > 0 && WN > 0,
                 "Tile dimensions must be positive");
   static_assert(BM % WM == 0 && BN % WN == 0 && WM % 16 == 0 && WN % 16 == 0,
@@ -371,14 +464,14 @@ __global__ __launch_bounds__(
                 "Input stages must fit the sm_80 opt-in shared memory limit");
   // Preserve the original static layout for small tiles. Unused static arrays
   // are removed in dynamic specializations; A and B each remain 32B aligned.
-  __shared__ __align__(32)
-      half at_static[DYNAMIC ? 1 : STAGES][DYNAMIC ? 1 : BM * BK];
-  __shared__ __align__(32)
-      half bt_static[DYNAMIC ? 1 : STAGES][DYNAMIC ? 1 : BK * BN];
+  __shared__ __align__(32) half at_static[DYNAMIC ? 1 : STAGES]
+                                        [DYNAMIC ? 1 : BM * BK];
+  __shared__ __align__(32) half bt_static[DYNAMIC ? 1 : STAGES]
+                                        [DYNAMIC ? 1 : BK * BN];
   extern __shared__ __align__(32) half input_storage[];
-  half(*at)[BM * BK] = reinterpret_cast<half(*)[BM * BK]>(
+  half (*at)[BM * BK] = reinterpret_cast<half (*)[BM * BK]>(
       DYNAMIC ? input_storage : &at_static[0][0]);
-  half(*bt)[BK * BN] = reinterpret_cast<half(*)[BK * BN]>(
+  half (*bt)[BK * BN] = reinterpret_cast<half (*)[BK * BN]>(
       DYNAMIC ? input_storage + STAGES * BM * BK : &bt_static[0][0]);
   const size_t tiles_n = size_t(N) / BN, tiles = (size_t(M) / BM) * tiles_n;
   for (size_t tile = blockIdx.x; tile < tiles; tile += gridDim.x) {
@@ -399,8 +492,8 @@ __global__ __launch_bounds__(
 #pragma unroll
         for (int e = 0; e < 4; ++e)
           acc[i][j][e] = 0;
-    SwizzledInputTile<BM, BK, THREADS> a_copy;
-    SwizzledInputTile<BK, BN, THREADS> b_copy;
+    SwizzledInputTile<BM, BK, THREADS, ADDRESS_MODE> a_copy;
+    SwizzledInputTile<BK, BN, THREADS, ADDRESS_MODE> b_copy;
     a_copy.init(A, K, row0, 0);
     b_copy.init(B, N, 0, col0);
     const int chunks = K / BK;
@@ -417,62 +510,166 @@ __global__ __launch_bounds__(
     }
     __pipeline_wait_prior(STAGES - 2);
     __syncthreads();
-    int cur = 0, next = STAGES - 1;
-    for (int t = 0; t < chunks; ++t) {
-      // This stage is free: all warps finished reading it before the preceding
-      // block barrier. Input pointers only advance for an in-bounds K chunk.
-      if (t + STAGES - 1 < chunks) {
-        a_copy.copy(at[next], BK);
-        b_copy.copy(bt[next], size_t(BK) * N);
-      }
-      __syncwarp();
-      __pipeline_commit();
-      uint32_t a[2][WM / 16][4], b[2][WN / 16][4];
-#if GEMM_REGISTER_PIPELINE
-#pragma unroll
-      for (int i = 0; i < WM / 16; ++i)
-        load_swizzled_a(
-            a[0][i], at[cur] + swizzled_offset<BK>(warp_m + i * 16 + lane % 16,
-                                                   (lane / 16) * 8));
-#pragma unroll
-      for (int j = 0; j < WN / 16; ++j)
-        load_swizzled_b(b[0][j], bt[cur] + swizzled_offset<BN>(
-                                               lane % 16, warp_n + j * 16 +
-                                                              (lane / 16) * 8));
-#endif
-#pragma unroll
-      for (int k = 0; k < BK / 16; ++k) {
-#if GEMM_REGISTER_PIPELINE
-        const int slot = k & 1;
-        const int load_k = k + 1, load_slot = slot ^ 1;
-#else
-        const int slot = 0, load_k = k, load_slot = 0;
-#endif
-        if (load_k < BK / 16) {
-#pragma unroll
-          for (int i = 0; i < WM / 16; ++i)
-            load_swizzled_a(
-                a[load_slot][i],
-                at[cur] + swizzled_offset<BK>(warp_m + i * 16 + lane % 16,
-                                              load_k * 16 + (lane / 16) * 8));
-#pragma unroll
-          for (int j = 0; j < WN / 16; ++j)
-            load_swizzled_b(b[load_slot][j],
-                            bt[cur] + swizzled_offset<BN>(
-                                          load_k * 16 + lane % 16,
-                                          warp_n + j * 16 + (lane / 16) * 8));
+    // Preserve the legacy loop's code generation as a compile-time branch,
+    // including its BK=64 operand lifetimes. Mode 0 remains a direct control.
+    if (SCHEDULE == 0) {
+      int cur = 0, next = STAGES - 1;
+      for (int t = 0; t < chunks; ++t) {
+        // This stage is free: all warps finished reading it before the preceding
+        // block barrier. Input pointers only advance for an in-bounds K chunk.
+        if (t + STAGES - 1 < chunks) {
+          a_copy.copy(at[next], BK);
+          b_copy.copy(bt[next], size_t(BK) * N);
         }
+        __syncwarp();
+        __pipeline_commit();
+        uint32_t a[2][WM / 16][4], b[2][WN / 16][4];
+#if GEMM_REGISTER_PIPELINE
 #pragma unroll
         for (int i = 0; i < WM / 16; ++i)
+          load_swizzled_a(
+              a[0][i], at[cur] + swizzled_offset<BK>(warp_m + i * 16 + lane % 16,
+                                                     (lane / 16) * 8));
 #pragma unroll
-          for (int j = 0; j < WN / 8; ++j)
-            mma_swizzled(acc[i][j], a[slot][i], &b[slot][j / 2][(j % 2) * 2]);
+        for (int j = 0; j < WN / 16; ++j)
+          load_swizzled_b(b[0][j], bt[cur] + swizzled_offset<BN>(
+                                                 lane % 16, warp_n + j * 16 +
+                                                                (lane / 16) * 8));
+#endif
+#pragma unroll
+        for (int k = 0; k < BK / 16; ++k) {
+#if GEMM_REGISTER_PIPELINE
+          const int slot = k & 1;
+          const int load_k = k + 1, load_slot = slot ^ 1;
+#else
+          const int slot = 0, load_k = k, load_slot = 0;
+#endif
+          if (load_k < BK / 16) {
+#pragma unroll
+            for (int i = 0; i < WM / 16; ++i)
+              load_swizzled_a(
+                  a[load_slot][i],
+                  at[cur] + swizzled_offset<BK>(warp_m + i * 16 + lane % 16,
+                                                load_k * 16 + (lane / 16) * 8));
+#pragma unroll
+            for (int j = 0; j < WN / 16; ++j)
+              load_swizzled_b(b[load_slot][j],
+                              bt[cur] + swizzled_offset<BN>(
+                                            load_k * 16 + lane % 16,
+                                            warp_n + j * 16 + (lane / 16) * 8));
+          }
+#pragma unroll
+          for (int i = 0; i < WM / 16; ++i)
+#pragma unroll
+            for (int j = 0; j < WN / 8; ++j)
+              mma_swizzled(acc[i][j], a[slot][i], &b[slot][j / 2][(j % 2) * 2]);
+        }
+        __pipeline_wait_prior(STAGES - 2);
+        // All threads' next operands are ready; all warps have released cur.
+        __syncthreads();
+        cur = cur + 1 == STAGES ? 0 : cur + 1;
+        next = next + 1 == STAGES ? 0 : next + 1;
       }
-      __pipeline_wait_prior(STAGES - 2);
-      // All threads' next operands are ready; all warps have released cur.
-      __syncthreads();
-      cur = cur + 1 == STAGES ? 0 : cur + 1;
-      next = next + 1 == STAGES ? 0 : next + 1;
+    } else {
+      int cur = 0, next = STAGES - 1;
+      constexpr bool CROSS_STAGE =
+          SCHEDULE >= 2 && GEMM_REGISTER_PIPELINE && BK >= 32;
+      constexpr bool INTERLEAVE = CROSS_STAGE && GEMM_INTERLEAVE_LOADS;
+      ScheduledOperands<BM, BN, BK, ADDRESS_MODE> operands;
+      operands.init(at, bt, warp_m, warp_n, lane);
+      uint32_t a[2][WM / 16][4], b[2][WN / 16][4];
+      if (CROSS_STAGE) {
+#pragma unroll
+        for (int i = 0; i < WM / 16; ++i)
+          operands.load_a(a[0][i], 0, 0, i);
+#pragma unroll
+        for (int j = 0; j < WN / 16; ++j)
+          operands.load_b(b[0][j], 0, 0, j);
+      }
+      for (int t = 0; t < chunks; ++t) {
+        // This stage is free: all warps finished reading it before the preceding
+        // block barrier. Input pointers only advance for an in-bounds K chunk.
+        if ((SCHEDULE == 0 || BK < 32) && t + STAGES - 1 < chunks) {
+          a_copy.copy(at[next], BK);
+          b_copy.copy(bt[next], size_t(BK) * N);
+        }
+        if (SCHEDULE == 0 || BK < 32) {
+          __syncwarp();
+          __pipeline_commit();
+        }
+#if GEMM_REGISTER_PIPELINE
+        if (!CROSS_STAGE) {
+#pragma unroll
+          for (int i = 0; i < WM / 16; ++i)
+            operands.load_a(a[0][i], cur, 0, i);
+#pragma unroll
+          for (int j = 0; j < WN / 16; ++j)
+            operands.load_b(b[0][j], cur, 0, j);
+        }
+#endif
+#pragma unroll
+        for (int k = 0; k < BK / 16; ++k) {
+#if GEMM_REGISTER_PIPELINE
+          const int slot = k & 1;
+          const int load_k = k + 1, load_slot = slot ^ 1;
+#else
+          const int slot = 0, load_k = k, load_slot = 0;
+#endif
+          const bool prefetch = load_k < BK / 16 ||
+              (CROSS_STAGE && t + 1 < chunks);
+          const int operand_k = load_k < BK / 16 ? load_k : 0;
+          if (prefetch && !INTERLEAVE) {
+#pragma unroll
+            for (int i = 0; i < WM / 16; ++i)
+              operands.load_a(a[load_slot][i], cur, operand_k, i);
+#pragma unroll
+            for (int j = 0; j < WN / 16; ++j)
+              operands.load_b(b[load_slot][j], cur, operand_k, j);
+          }
+#pragma unroll
+          for (int i = 0; i < WM / 16; ++i) {
+#pragma unroll
+            for (int j = 0; j < WN / 8; ++j) {
+              mma_swizzled(acc[i][j], a[slot][i], &b[slot][j / 2][(j % 2) * 2]);
+              // Keep each B fragment's reuse across all M fragments. Only its
+              // other register slot is filled, once per K group.
+              if (INTERLEAVE && prefetch && i == 0 && j % 2 == 1)
+                operands.load_b(b[load_slot][j / 2], cur, operand_k, j / 2);
+            }
+            if (INTERLEAVE && prefetch)
+              operands.load_a(a[load_slot][i], cur, operand_k, i);
+            // Finish issuing this stage before the final K group. Its commit
+            // still represents a whole stage, including an empty drain group.
+            if (SCHEDULE > 0 && BK >= 32 && k < BK / 16 - 1 &&
+                t + STAGES - 1 < chunks) {
+              constexpr int GROUPS = (BK / 16 - 1) * (WM / 16);
+              const int group = k * (WM / 16) + i;
+              a_copy.template copy_group<GROUPS>(at[next], BK, group);
+              b_copy.template copy_group<GROUPS>(bt[next], size_t(BK) * N, group);
+            }
+          }
+          if (SCHEDULE > 0 && BK >= 32 && k == BK / 16 - 2) {
+            __syncwarp();
+            __pipeline_commit();
+            if (CROSS_STAGE) {
+              // The last K group's operands are now in registers. All warps
+              // can release cur before its MMA, then prefetch the next stage
+              // into the alternate register slot during that final group.
+              __pipeline_wait_prior(STAGES - 2);
+              __syncthreads();
+              cur = cur + 1 == STAGES ? 0 : cur + 1;
+              next = next + 1 == STAGES ? 0 : next + 1;
+            }
+          }
+        }
+        if (!CROSS_STAGE) {
+          __pipeline_wait_prior(STAGES - 2);
+          // All threads' next operands are ready; all warps have released cur.
+          __syncthreads();
+          cur = cur + 1 == STAGES ? 0 : cur + 1;
+          next = next + 1 == STAGES ? 0 : next + 1;
+        }
+      }
     }
     __pipeline_wait_prior(0);
     // Pack each lane's adjacent output values, then exchange the two N=8
@@ -499,7 +696,8 @@ __global__ __launch_bounds__(
 #pragma unroll
         for (int stripe = 0; stripe < 2; ++stripe) {
           const int source_lane = (stripe * 4 + lane / 8) * 4 + lane % 4;
-          const uint32_t left = __shfl_sync(0xffffffff, packed[0], source_lane);
+          const uint32_t left =
+              __shfl_sync(0xffffffff, packed[0], source_lane);
           const uint32_t right =
               __shfl_sync(0xffffffff, packed[1], source_lane);
           const uint32_t value = (lane / 4) % 2 ? right : left;
@@ -530,31 +728,24 @@ __global__ __launch_bounds__(
             for (int h = 0; h < 2; ++h) {
               const size_t row =
                   row0 + warp_m + i * 16 + lane / 4 + half_rows * 8;
-              const size_t col =
-                  col0 + warp_n + j * 16 + h * 8 + (lane % 4) * 2;
+              const size_t col = col0 + warp_n + j * 16 + h * 8 + (lane % 4) * 2;
               const size_t index = row * N + col;
               // The true specialization contains no scaling or old-C loads.
-              // C++14 folds this template-constant branch before code
-              // generation.
-              const float x =
-                  UNIT_ALPHA_ZERO_BETA
-                      ? acc[i][j * 2 + h][half_rows * 2]
-                      : alpha * acc[i][j * 2 + h][half_rows * 2] +
-                            (beta == 0.0f ? 0.0f
-                                          : beta * __half2float(C[index]));
-              const float y =
-                  UNIT_ALPHA_ZERO_BETA
-                      ? acc[i][j * 2 + h][half_rows * 2 + 1]
-                      : alpha * acc[i][j * 2 + h][half_rows * 2 + 1] +
-                            (beta == 0.0f ? 0.0f
-                                          : beta * __half2float(C[index + 1]));
+              // C++14 folds this template-constant branch before code generation.
+              const float x = UNIT_ALPHA_ZERO_BETA
+                  ? acc[i][j * 2 + h][half_rows * 2]
+                  : alpha * acc[i][j * 2 + h][half_rows * 2] +
+                        (beta == 0.0f ? 0.0f : beta * __half2float(C[index]));
+              const float y = UNIT_ALPHA_ZERO_BETA
+                  ? acc[i][j * 2 + h][half_rows * 2 + 1]
+                  : alpha * acc[i][j * 2 + h][half_rows * 2 + 1] +
+                        (beta == 0.0f ? 0.0f : beta * __half2float(C[index + 1]));
               if (UNIT_ALPHA_ZERO_BETA) {
                 const __half2_raw pair = __floats2half2_rn(x, y);
                 packed[h] = uint32_t(pair.x) | (uint32_t(pair.y) << 16);
               } else {
-                packed[h] =
-                    uint32_t(__half_as_ushort(__float2half_rn(x))) |
-                    (uint32_t(__half_as_ushort(__float2half_rn(y))) << 16);
+                packed[h] = uint32_t(__half_as_ushort(__float2half_rn(x))) |
+                            (uint32_t(__half_as_ushort(__float2half_rn(y))) << 16);
               }
             }
 #pragma unroll
@@ -565,8 +756,8 @@ __global__ __launch_bounds__(
               const uint32_t right =
                   __shfl_sync(0xffffffff, packed[1], source_lane);
               const uint32_t value = (lane / 4) % 2 ? right : left;
-              const size_t row = row0 + warp_m + i * 16 + half_rows * 8 +
-                                 stripe * 4 + lane / 8;
+              const size_t row =
+                  row0 + warp_m + i * 16 + half_rows * 8 + stripe * 4 + lane / 8;
               const size_t col = col0 + warp_n + j * 16 + (lane % 8) * 2;
               const size_t index = row * N + col;
               __half2_raw pair;
@@ -611,14 +802,13 @@ __global__ __launch_bounds__(
 #endif
 
 template <bool UNIT_ALPHA_ZERO_BETA, int BM, int BN, int BK, int WM, int WN,
-          int STAGES>
-static bool launch_large(const half *A, const half *B, half *C, int M, int N,
-                         int K, float alpha, float beta) {
+          int STAGES, int SCHEDULE = GEMM_SCHEDULE>
+static bool launch_schedule(const half *A, const half *B, half *C, int M, int N,
+                            int K, float alpha, float beta) {
   constexpr int THREADS = (BM / WM) * (BN / WN) * 32;
   constexpr size_t SHARED_BYTES = STAGES * (BM + BN) * BK * sizeof(half);
   constexpr size_t DYNAMIC_BYTES = SHARED_BYTES > 48 * 1024 ? SHARED_BYTES : 0;
-  static_assert(GEMM_DYNAMIC_SHARED_LIMIT >= 0,
-                "Nonnegative shared memory cap");
+  static_assert(GEMM_DYNAMIC_SHARED_LIMIT >= 0, "Nonnegative shared memory cap");
   if (DYNAMIC_BYTES) {
     int device = 0, limit = 0;
     if (cudaGetDevice(&device) != cudaSuccess ||
@@ -627,21 +817,21 @@ static bool launch_large(const half *A, const half *B, half *C, int M, int N,
       return false;
     // Unsupported devices retain the fixed generic fallback. Configure on
     // each launch so device/context changes require no host-side cache.
-    if (DYNAMIC_BYTES > size_t(limit) ||
+    if (int(DYNAMIC_BYTES) > limit ||
         (GEMM_DYNAMIC_SHARED_LIMIT > 0 &&
          DYNAMIC_BYTES > size_t(GEMM_DYNAMIC_SHARED_LIMIT)))
       return false;
     if (cudaFuncSetAttribute(
-            gemm_wmma_tiled_pipeline_large<UNIT_ALPHA_ZERO_BETA, BM, BN, BK, WM,
-                                           WN, STAGES>,
+            gemm_wmma_tiled_pipeline_schedule<UNIT_ALPHA_ZERO_BETA, BM, BN, BK,
+                                           WM, WN, STAGES, SCHEDULE>,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
             int(DYNAMIC_BYTES)) != cudaSuccess)
       return false;
   }
   const size_t tiles = (size_t(M) / BM) * (size_t(N) / BN);
   const unsigned blocks = unsigned(tiles < 2147483647u ? tiles : 2147483647u);
-  gemm_wmma_tiled_pipeline_large<UNIT_ALPHA_ZERO_BETA, BM, BN, BK, WM, WN,
-                                 STAGES>
+  gemm_wmma_tiled_pipeline_schedule<UNIT_ALPHA_ZERO_BETA, BM, BN, BK, WM, WN,
+                                   STAGES, SCHEDULE>
       <<<blocks, THREADS, DYNAMIC_BYTES>>>(A, B, C, M, N, K, alpha, beta);
   return true;
 }
@@ -651,7 +841,7 @@ static bool launch_large(const half *A, const half *B, half *C, int M, int N,
 // Fast tiles require complete dimensions and 16-byte-aligned A/B. C needs
 // only half alignment; a misaligned half2 output uses scalar stores instead.
 // Default tile selection uses 64x64, 64x128, 96x128, or 128x128 blocks and
-// three input stages. Small output grids use BK=64 when K is a multiple of 64
+// three/four input stages. Small output grids use BK=64 when K is a multiple of 64
 // and has at least three chunks; other configurations retain BK=32.
 // Explicit GEMM_BM/BN/BK/WM/WN/STAGES disables automatic
 // selection. Unsupported layouts/tails use the fixed 64x64 generic WMMA
@@ -659,11 +849,11 @@ static bool launch_large(const half *A, const half *B, half *C, int M, int N,
 // and K=16.
 // Larger explicit tiles use dynamic shared storage above 48 KiB, with opt-in
 // on the active device. An unsupported size falls back to the generic kernel.
-// The 26-candidate A800 screen found no broadly beneficial replacement for
-// the existing dispatcher, so larger configurations remain explicit overrides.
+// The scheduled 128x128 path is selected only in measured A800 grid bands;
+// other shapes and general alpha/beta retain the preceding dispatcher.
 template <bool UNIT_ALPHA_ZERO_BETA>
-static void solve_large(const half *A, const half *B, half *C, int M, int N,
-                        int K, float alpha, float beta) {
+static void solve_schedule(const half *A, const half *B, half *C, int M, int N,
+                      int K, float alpha, float beta) {
   if (M <= 0 || N <= 0)
     return;
 #if (GEMM_BK & (GEMM_BK - 1)) == 0 && (GEMM_BN & (GEMM_BN - 1)) == 0
@@ -673,12 +863,32 @@ static void solve_large(const half *A, const half *B, half *C, int M, int N,
        15) == 0;
   if (full_aligned) {
 #if GEMM_AUTO_TILE
+    // A800 has 108 SMs. The 128x128 tile works well for a small single wave
+    // or a sufficiently populated medium grid; it lost at 1536 cubed and
+    // at 6144/8192 cubed. Keep the older choices outside these measured bands.
+    const size_t scheduled_tiles = (size_t(M) / 128) * (size_t(N) / 128);
+    if (UNIT_ALPHA_ZERO_BETA && GEMM_SCHEDULE > 0 &&
+        M % 128 == 0 && N % 128 == 0 && K % 32 == 0 &&
+        M >= 1024 && N >= 1024 && M <= 4096 && N <= 4096 &&
+        K >= 128 && K <= 8192 &&
+        ((scheduled_tiles >= 64 && scheduled_tiles <= 108) ||
+         (scheduled_tiles >= 256 && scheduled_tiles <= 1024))) {
+      // Four stages help long K on grids near 256..324 blocks. If opt-in
+      // storage is unavailable, the three-stage static kernel still applies.
+      if (scheduled_tiles >= 256 && scheduled_tiles <= 324 && K >= 1024 &&
+          launch_schedule<UNIT_ALPHA_ZERO_BETA, 128, 128, 32, 64, 64, 4>
+              (A, B, C, M, N, K, alpha, beta))
+        return;
+      if (launch_schedule<UNIT_ALPHA_ZERO_BETA, 128, 128, 32, 64, 64, 3>
+              (A, B, C, M, N, K, alpha, beta))
+        return;
+    }
     // Larger reuse tiles need enough blocks and K work to amortize their
     // register/output costs. Thresholds were measured on A800, not autotuned.
     if (M % 128 == 0 && N % 128 == 0 && K % 32 == 0 && K >= 2048 &&
         (size_t(M) / 128) * (size_t(N) / 128) >= 1024) {
-      launch_large<UNIT_ALPHA_ZERO_BETA, 128, 128, 32, 64, 64, 3>(
-          A, B, C, M, N, K, alpha, beta);
+      launch_schedule<UNIT_ALPHA_ZERO_BETA, 128, 128, 32, 64, 64, 3, 0>
+          (A, B, C, M, N, K, alpha, beta);
       return;
     }
     // The 96x128 tile uses 237 registers/thread (232 for alpha=1/beta=0)
@@ -688,14 +898,14 @@ static void solve_large(const half *A, const half *B, half *C, int M, int N,
     // Retain the 128x128 large-matrix path above; its reuse is greater still.
     if (M % 192 == 0 && N % 128 == 0 && K % 32 == 0 &&
         (size_t(M) / 96) * (size_t(N) / 128) >= 192) {
-      launch_large<UNIT_ALPHA_ZERO_BETA, 96, 128, 32, 48, 64, 3>(
-          A, B, C, M, N, K, alpha, beta);
+      launch_schedule<UNIT_ALPHA_ZERO_BETA, 96, 128, 32, 48, 64, 3, 0>
+          (A, B, C, M, N, K, alpha, beta);
       return;
     }
     if (M % 64 == 0 && N % 128 == 0 && K % 32 == 0 && K >= 512 &&
         (size_t(M) / 64) * (size_t(N) / 128) >= 256) {
-      launch_large<UNIT_ALPHA_ZERO_BETA, 64, 128, 32, 32, 64, 3>(
-          A, B, C, M, N, K, alpha, beta);
+      launch_schedule<UNIT_ALPHA_ZERO_BETA, 64, 128, 32, 32, 64, 3, 0>
+          (A, B, C, M, N, K, alpha, beta);
       return;
     }
     // A800: the 48 KiB BK=64 tile permits three resident blocks per SM.
@@ -705,21 +915,22 @@ static void solve_large(const half *A, const half *B, half *C, int M, int N,
     // thresholds, not a portable autotuner.
     if (M % 64 == 0 && N % 64 == 0 && K % 64 == 0 && K >= 192 &&
         (size_t(M) / 64) * (size_t(N) / 64) <= 324) {
-      launch_large<UNIT_ALPHA_ZERO_BETA, 64, 64, 64, 32, 32, 3>(A, B, C, M, N,
-                                                                K, alpha, beta);
+      launch_schedule<UNIT_ALPHA_ZERO_BETA, 64, 64, 64, 32, 32, 3, 0>
+          (A, B, C, M, N, K, alpha, beta);
       return;
     }
 #endif
-    if (launch_large<UNIT_ALPHA_ZERO_BETA, GEMM_BM, GEMM_BN, GEMM_BK, GEMM_WM,
-                     GEMM_WN, GEMM_STAGES>(A, B, C, M, N, K, alpha, beta))
+    if (launch_schedule<UNIT_ALPHA_ZERO_BETA, GEMM_BM, GEMM_BN, GEMM_BK,
+                     GEMM_WM, GEMM_WN, GEMM_STAGES,
+                     GEMM_AUTO_TILE ? 0 : GEMM_SCHEDULE>(A, B, C, M, N, K, alpha, beta))
       return;
   }
 #endif
   // Large aligned tile overrides must not inflate generic shared storage.
   const size_t tiles = ((size_t(M) + 63) / 64) * ((size_t(N) + 63) / 64);
   const unsigned blocks = unsigned(tiles < 2147483647u ? tiles : 2147483647u);
-  gemm_wmma_tiled_pipeline_aligned<UNIT_ALPHA_ZERO_BETA, false, 64, 64, 32, 32,
-                                   32, 16>
+  gemm_wmma_tiled_pipeline_aligned<UNIT_ALPHA_ZERO_BETA, false, 64, 64, 32,
+                                  32, 32, 16>
       <<<blocks, 128>>>(A, B, C, M, N, K, alpha, beta);
 }
 
@@ -735,9 +946,9 @@ extern "C" void solve(const half *A, const half *B, half *C, int M, int N,
     return;
 #if GEMM_SPECIALIZE_ALPHA_BETA
   if (alpha == 1.0f && beta == 0.0f) {
-    solve_large<true>(A, B, C, M, N, K, alpha, beta);
+    solve_schedule<true>(A, B, C, M, N, K, alpha, beta);
     return;
   }
 #endif
-  solve_large<false>(A, B, C, M, N, K, alpha, beta);
+  solve_schedule<false>(A, B, C, M, N, K, alpha, beta);
 }
