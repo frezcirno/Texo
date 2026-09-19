@@ -1,6 +1,7 @@
 """Shared helpers for the optional Triton checks and GEMM comparison."""
 
 import ctypes
+import hashlib
 import importlib.util
 from pathlib import Path
 import sys
@@ -19,12 +20,44 @@ except ImportError as error:
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_triton():
-    spec = importlib.util.spec_from_file_location("texo_gemm_triton", ROOT / "src/gemm.triton.py")
+def load_triton(source=None):
+    source = Path(source or ROOT / "src/gemm.triton.py").resolve()
+    name = "texo_gemm_triton_" + hashlib.sha256(str(source).encode()).hexdigest()[:12]
+    spec = importlib.util.spec_from_file_location(name, source)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def triton_configs(module):
+    return module._configs() if hasattr(module, "get_tuned_configs") else module.gemm_kernel.configs
+
+
+def selected_triton_config(module, m, n, k):
+    if hasattr(module, "get_tuned_configs"):
+        return module.get_tuned_configs()[(torch.cuda.current_device(), m, n, k, True, True)]
+    config = module.gemm_kernel.best_config
+    return dict(config.kwargs, num_warps=config.num_warps, num_stages=config.num_stages)
+
+
+def fixed_triton_solve(module, config):
+    """Exercise each version's raw JIT candidate, outside its autotuner."""
+    def solve(a, b, c, m, n, k, alpha, beta):
+        if m == 0 or n == 0:
+            return
+        tiles_m, tiles_n = triton.cdiv(m, config.kwargs["BM"]), triton.cdiv(n, config.kwargs["BN"])
+        if hasattr(module, "get_tuned_configs"):
+            use_i64 = max((m + 256) * (k + 64), (k + 64) * (n + 256),
+                          (m + 256) * (n + 256)) >= 2**31
+            module._gemm[(tiles_m * tiles_n,)](
+                a, b, c, c, m, n, k, float(alpha), float(beta),
+                BETA_ZERO=beta == 0, ALPHA_ONE=alpha == 1, USE_I64=use_i64,
+                **config.all_kwargs())
+        else:
+            module.gemm_kernel.fn[(tiles_m, tiles_n)](
+                a, b, c, m, n, k, float(alpha), float(beta), **config.all_kwargs())
+    return solve
 
 
 def check_device():

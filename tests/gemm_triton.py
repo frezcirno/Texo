@@ -8,7 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from gemm_support import (check_close, check_device, check_guards, guarded_tensor,
-                          load_triton, torch, triton)
+                          fixed_triton_solve, load_triton, torch, triton_configs)
 
 
 def run_case(case, solve):
@@ -50,24 +50,19 @@ def run_case(case, solve):
     return maximum
 
 
-def fixed_solve(module, config):
-    def solve(a, b, c, m, n, k, alpha, beta):
-        if m == 0 or n == 0:
-            return
-        grid = (triton.cdiv(m, config.kwargs["BM"]), triton.cdiv(n, config.kwargs["BN"]))
-        module.gemm_kernel.fn[grid](a, b, c, m, n, k, float(alpha), float(beta),
-                                    **config.all_kwargs())
-    return solve
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, default=Path("src/gemm.triton.py"))
     parser.add_argument("--cases-binary", type=Path, required=True,
                         help="CUDA GEMM test executable supporting --list-cases")
     parser.add_argument("--case", action="append", dest="names", help="select a case by name")
     parser.add_argument("--all-configs", action="store_true",
                         help="also validate every autotune candidate on representative cases")
+    parser.add_argument("--fixed-only", action="store_true",
+                        help="check every candidate on selected cases without autotuning (for sanitizers)")
     args = parser.parse_args()
+    if args.fixed_only and not args.all_configs:
+        parser.error("--fixed-only requires --all-configs")
     output = subprocess.check_output([str(args.cases_binary.resolve()), "--list-cases"], text=True)
     cases = [json.loads(line) for line in output.splitlines()]
     if args.names:
@@ -76,23 +71,25 @@ def main():
             parser.error(f"unknown cases: {sorted(unknown)}")
         cases = [case for case in cases if case["name"] in args.names]
     check_device()
-    module = load_triton()
+    module = load_triton(args.source)
+    print(f"Source: {args.source}", flush=True)
     count = 0
     print("FP16 inputs/output; CPU double reference; atol=0.01 rtol=0.01; two calls/case.", flush=True)
     with torch.cuda.stream(torch.cuda.default_stream()):
-        for case in cases:
-            error = run_case(case, module.solve)
-            count += 1
-            print(f"{case['name']:<24} PASS max_abs_error={error:g}", flush=True)
+        if not args.fixed_only:
+            for case in cases:
+                error = run_case(case, module.solve)
+                count += 1
+                print(f"{case['name']:<24} PASS max_abs_error={error:g}", flush=True)
         # Autotuning only checks the selected result. Check rejected candidates
         # too, including a full tile, tails, NaN C, K=0 and misaligned A/B.
         forced_names = {"multi-tile-tail", "unaligned-A-B", "full-output-K-zero",
                         "large-five-nan", "alpha-zero", "single-row", "random-long-K"}
         if args.all_configs:
-            for index, config in enumerate(module.gemm_kernel.configs):
+            for index, config in enumerate(triton_configs(module)):
                 for case in cases:
-                    if case["name"] in forced_names:
-                        error = run_case(case, fixed_solve(module, config))
+                    if args.fixed_only or case["name"] in forced_names:
+                        error = run_case(case, fixed_triton_solve(module, config))
                         count += 1
                         print(f"config={index} {case['name']:<24} PASS max_abs_error={error:g}", flush=True)
     print(f"ALL PASSED ({count} checks)", flush=True)

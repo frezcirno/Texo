@@ -100,6 +100,13 @@ before consuming outputs on the CPU.
   bases; M/N=0 does no work, K=0 scales C, and beta=0 skips reading old C.
   Seven tile/warp/stage configurations are autotuned. See the
   [Triton integration](gemm-triton.md) for checks and comparison scope.
+- `gemm.triton.v2.py` / `gemm.triton.v3.py`: the same contiguous row-major FP16
+  contract, with grouped tile order, bounded 32-bit addressing, scalar
+  specialization, and a cached JIT launch after CUDA-Graph tuning into separate
+  output storage. V2 has 32 candidates and uses newer Triton autotune APIs;
+  V3 has 34 candidates, supports Triton 3.1's graph-tuning interface and
+  synchronizes input production before first-use tuning. Use `TRITON_SOURCE`
+  to select either version in the [shared checks](gemm-triton.md).
 - `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]
   and C[BATCH,M,N], using contiguous row-major storage without broadcasting or
   transposes. The current kernel adds into C; callers must clear C before each

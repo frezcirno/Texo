@@ -48,6 +48,7 @@ PYTHON ?= python3
 # Python dependencies remain optional for the standalone CUDA build.
 WITH_TRITON ?= 0
 TRITON_CUDA_GEMM ?= gemm_wmma_tiled_pipeline_schedule
+TRITON_SOURCE ?= src/gemm.triton.py
 TRITON_TEST_ARGS ?= --all-configs
 TRITON_BENCH_ARGS ?=
 BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
@@ -245,14 +246,14 @@ ifeq ($(WITH_TRITON),1)
 	$(MAKE) check-gemm-triton
 endif
 check-gemm-triton: $(BIN_DIR)/gemm_cublas_bench
-	$(PYTHON) tests/gemm_triton.py --cases-binary $< $(TRITON_TEST_ARGS)
+	$(PYTHON) tests/gemm_triton.py --source "$(TRITON_SOURCE)" --cases-binary $< $(TRITON_TEST_ARGS)
 bench-gemm-triton-compare: $(BIN_DIR)/$(TRITON_CUDA_GEMM).so $(BIN_DIR)/gemm_cublas.so
 	$(PYTHON) benchmarks/gemm_triton.py --bin-dir "$(BIN_DIR)" --cuda "$(TRITON_CUDA_GEMM)" \
-	  --output "$(BIN_DIR)/triton-comparison.csv" $(TRITON_BENCH_ARGS)
+	  --source "$(TRITON_SOURCE)" --output "$(BIN_DIR)/triton-comparison.csv" $(TRITON_BENCH_ARGS)
 sanitize-gemm-triton: $(BIN_DIR)/gemm_cublas_bench
 	@set -e; for tool in memcheck racecheck synccheck; do \
 	  $(COMPUTE_SANITIZER) --tool $$tool --error-exitcode 1 \
-	    $(PYTHON) tests/gemm_triton.py --cases-binary $< --all-configs \
+	    $(PYTHON) tests/gemm_triton.py --source "$(TRITON_SOURCE)" --cases-binary $< --all-configs --fixed-only \
 	    --case multi-tile-tail --case unaligned-A-B --case ab10-nan-K0; \
 	done
 # Keep GPU profiling serial even with make -j; compilation may run in parallel.
@@ -456,8 +457,10 @@ help:
 	@echo 'gemm*_perf      Optional large-shape binaries in BIN_DIR; M N K [iterations|--profile]'
 	@echo 'check-gemm-triton Reuse CUDA GEMM cases for Triton, plus all autotune candidates'
 	@echo '                 Set PYTHON to a CUDA PyTorch/Triton environment; WITH_TRITON=1 includes it in check/check-gemm'
+	@echo '                 TRITON_SOURCE=src/gemm.triton.v2.py (or v3.py) selects another version'
 	@echo 'bench-gemm-triton-compare Compare Triton, CUDA schedule, and cuBLAS on identical buffers'
 	@echo '                 TRITON_BENCH_ARGS="--shape M N K [--verify-only]"; TRITON_CUDA_GEMM selects the CUDA source'
+	@echo '                 Repeat --reference-source src/gemm.triton.py to compare multiple Triton versions together'
 	@echo 'sanitize-gemm-triton Check Triton tails/unaligned pointers with all three sanitizer tools'
 	@echo 'nsys-gemm       Profile all WMMA variants and cuBLAS serially, then print stats'
 	@echo '                Set CUDA_VISIBLE_DEVICES, GEMM_ARGS, NSYS_DIR, NSYS_FLAGS as needed'

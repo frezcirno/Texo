@@ -83,6 +83,9 @@ The optional [Triton GEMM integration](docs/gemm-triton.md) reuses the CUDA
 correctness cases and compares Triton, CUDA schedule, and cuBLAS on identical
 buffers. `make check WITH_TRITON=1` includes its checks; the default CUDA build
 does not require Python packages.
+Use `TRITON_SOURCE=src/gemm.triton.v2.py` or `src/gemm.triton.v3.py` to select
+another version. Repeated `--reference-source` arguments in `TRITON_BENCH_ARGS`
+compare multiple Triton versions with CUDA and cuBLAS in one process.
 
 ## Running individual tests
 

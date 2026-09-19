@@ -38,13 +38,28 @@ configurations on seven representative cases (49 additional checks). This catche
 incorrect candidates even when the autotuner would select a different one.
 Public-solve checks retain real autotuning, so their first calls include internal
 candidate timing; no performance comparison is inferred from correctness runs.
-The sanitizer target checks three cases through public solve plus the applicable
-forced candidates under memcheck, racecheck and synccheck.
+The sanitizer target directly checks all candidates on three selected cases
+under memcheck, racecheck and synccheck. It uses `--fixed-only --all-configs`
+to avoid repeatedly benchmarking candidates under instrumentation; ordinary
+correctness checks exercise the real public-solve autotuning path.
 
 ```sh
 # Focused checks; names come from --list-cases.
 make check-gemm-triton TRITON_TEST_ARGS="--case multi-tile-tail --case ab10-nan-K0"
 build/sm_80/gemm_cublas_bench --list-cases
+```
+
+`TRITON_SOURCE` selects another standalone version for checks, sanitizer runs
+and benchmarks. The default remains `src/gemm.triton.py`. Versions
+`src/gemm.triton.v2.py` and `src/gemm.triton.v3.py` expose the same `solve`
+contract and are supported by the runner, including their 32 and 34 raw JIT
+candidate configurations. V2 needs the newer custom `do_bench` autotune API;
+V3 uses the CUDA-Graph tuning API also available in Triton 3.1. The v2/v3
+comparison uses Triton 3.3.1 for all versions to keep the compiler consistent.
+
+```sh
+make check-gemm-triton TRITON_SOURCE=src/gemm.triton.v3.py
+make sanitize-gemm-triton TRITON_SOURCE=src/gemm.triton.v3.py
 ```
 
 ## Performance comparison
@@ -60,16 +75,28 @@ CUDA_VISIBLE_DEVICES=0 make bench-gemm-triton-compare \
 # Exercise the comparison adapters and references without timing batches.
 CUDA_VISIBLE_DEVICES=0 make bench-gemm-triton-compare \
   TRITON_BENCH_ARGS="--shape 65 129 67 --shape 1024 1024 128 --verify-only"
+
+# Compare v2, v1, v3, CUDA schedule and cuBLAS in the same process.
+CUDA_VISIBLE_DEVICES=0 make bench-gemm-triton-compare \
+  TRITON_SOURCE=src/gemm.triton.v2.py \
+  TRITON_BENCH_ARGS="--reference-source src/gemm.triton.py --reference-source src/gemm.triton.v3.py --rounds 4"
 ```
+
+`--reference-source` may be repeated. CSV labels `triton`, `triton_reference`,
+`triton_reference_2`, etc. map to the source paths recorded in the metadata JSON.
+Each implementation has its own tuning cache; all measured calls use the same
+buffers and scalar values. Changing the Triton compiler can change both selected
+configurations and generated kernels, so rerun the reference version alongside
+the new version rather than using earlier measurements as its baseline.
 
 `benchmarks/gemm_triton.py` loads independent shared libraries built from the
 unmodified CUDA solve entry points. The default is
 `TRITON_CUDA_GEMM=gemm_wmma_tiled_pipeline_schedule`; another standalone GEMM
-source can be selected with that variable. cuBLAS is always a third baseline.
+source can be selected with that variable. cuBLAS is always included as a baseline.
 The adapters deliberately use logical device 0 and its default stream, matching
 the native wrappers. They are comparison tools, not general multi-stream bindings.
 
-All three implementations reuse **the same** random FP16 A/B and guarded C,
+All implementations reuse **the same** random FP16 A/B and guarded C,
 with alpha=1/beta=0. All outputs are checked against `src/gemm_cublas.cu` with
 FP32 accumulation and reduced-precision reduction disabled before timing. CPU
 checks are a separate requirement; the performance reference does not replace
@@ -93,6 +120,9 @@ process. Record competing workloads and use an idle GPU for performance claims.
 `--verify-only` writes no timing report. The initial 2026-09-19 pass performed
 validation only. A subsequent run used relatively idle GPU 2; see the
 [measured Triton/CUDA/cuBLAS comparison](gemm-triton-performance.md).
+The subsequent [v1/v2/v3 comparison](gemm-triton-versions.md) reruns all three
+Triton versions with one compiler and includes CUDA/cuBLAS, selected
+configurations, sanitizer results and a separate kernel-duration profile.
 
 ## Validation recorded on 2026-09-19
 
