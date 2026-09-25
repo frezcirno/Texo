@@ -65,6 +65,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | Matrix-vector multiplication | `src/mat_vec_mul.cu` | `make run-mat-vec` |
 | FP16 GEMM: scalar, tiled, WMMA, multi-warp WMMA, pipelined WMMA, aligned pipeline, swizzled pipeline, multistage pipeline, mainloop scheduling, larger reuse tile, specialized epilogue, large-tile experiments, distributed mainloop, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_wmma_tiled.cu`, `src/gemm_wmma_tiled_pipeline.cu`, `src/gemm_wmma_tiled_pipeline_aligned.cu`, `src/gemm_wmma_tiled_pipeline_aligned_swizzled.cu`, `src/gemm_wmma_tiled_pipeline_multistage.cu`, `src/gemm_wmma_tiled_pipeline_mainloop.cu`, `src/gemm_wmma_tiled_pipeline_reuse.cu`, `src/gemm_wmma_tiled_pipeline_epilogue.cu`, `src/gemm_wmma_tiled_pipeline_large.cu`, `src/gemm_wmma_tiled_pipeline_schedule.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
 | Batched FP32 matrix multiplication | `src/batched_mm.cu` | `make run-batched-mm` |
+| Quantized INT8 matrix multiplication | `src/mm_int8.cu` | `make run-mm-int8` |
 | FP16 GEMM in Triton | `src/gemm.triton.py` | `make check-gemm-triton`, `make bench-gemm-triton-compare` |
 | Mean categorical cross entropy | `src/cat_ce.cu` | `make run-cat-ce` |
 | Mean squared error with FP64 reduction | `src/mse.cu` | `make run-mse` |

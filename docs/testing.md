@@ -20,6 +20,8 @@ to each executable's tolerances. It does not run the unimplemented top-k exercis
 rounding error seen with repeated float atomic additions, plus top-k selection with
 N=50000000 and k=100. The top-k suite compares against a CPU partial sort and reports
 the best of two warm wrapper wall times, including allocation and freeing.
+`check-full` also runs an INT8 8192x4096x2048 cancellation regression with an
+analytic reference for every output element.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -53,13 +55,68 @@ Validated on 2026-09-25 with NVIDIA A800 80GB PCIe, CUDA Toolkit 12.6.20,
 `-O3 -std=c++14 -arch=sm_80`: all 28 cases, the full `make check`, and the
 sigmoid memcheck run passed (zero reported errors).
 
-`batched_mm_test` checks rectangular matrices, distinct data for each batch,
-partial blocks in all three output dimensions, identity and zero matrices, and a
-nonzero final reduction element. It compares with CPU double accumulation using
-atol=1e-5 and rtol=1e-5, clears C before each call, and checks input storage and
-output guards. Run it with `make run-batched-mm`; it also runs in `make check`.
+`batched_mm_test` has 44 cases covering rectangular matrices, independently
+partial BATCH/M/N blocks, K=1 and long reductions, batch-specific data, an active
+last batch with all others zero, identity/zero matrices, and a nonzero final
+reduction element. It checks both multiplication with cleared C and three
+consecutive `C += A*B` calls starting from nonzero C. Independent CPU double
+products use atol=1e-5 and rtol=1e-5, with float rounding of C between accumulated
+calls; zero products and inactive batches must preserve finite C exactly.
+Unaligned A/B/C are tested separately and together. All calls check input storage
+and output guards. K=0 passes null A/B and must preserve finite C; zero BATCH,
+M or N must leave storage bitwise unchanged and permit null pointers.
+Run it with `make run-batched-mm`; it also runs in `make check` and under
+memcheck in `make sanitize`.
+Validated on 2026-09-25 with NVIDIA A800 80GB PCIe, CUDA Toolkit 12.6.20,
+`-O3 -std=c++14 -arch=sm_80`: all 44 cases, the full `make check`, and the
+batched-MM memcheck run passed (zero reported errors).
 
-`sanitize` runs memory checks on GEMM, batched matrix multiplication, blur,
+`mm_int8_test` has 56 default cases covering rectangular matrices, independent
+16x16 block boundaries, K=1/257/1025/2048, full signed INT8 inputs, independent input/output
+zero points (including endpoints), quantized zeros and identity matrices, and
+a nonzero last reduction element. It checks round-to-nearest, ties-to-even on
+both signs, the adjacent FP32 values around 0.5, all three scales, nonbinary
+scales, both saturation limits, and saturation after adding zero_point_C.
+A/B/C are tested at independent and combined byte offsets. K=0 uses null A/B
+and must fill C with zero_point_C. M/N are positive; empty outputs and invalid
+scales are outside this operator's test contract.
+
+The reference uses an INT64 dot product and double scaling, with an explicit
+floor/parity implementation of ties-to-even rounding. Results
+must match exactly. The main cases use binary scales and bounded sums to avoid
+ambiguity from FP32 accumulation; the decimal-scale case stays away from half
+boundaries. These are selected quantization regressions, not a claim of exact
+FP32-versus-ideal agreement for all scales and reduction lengths. The reported
+LeetGPU 3x5x2 failure pins all 15 expected bytes directly, including C[1,3]=58;
+its sign-reversed case pins -58. A double formula applied to the binary FP32
+scales can land on a different side of a half boundary, so those external
+expectations are not regenerated from that formula. The old `roundf` kernel
+reproduced 59 versus 58; `nearbyintf` passes the case and both-sign tie checks.
+See NVIDIA's [rounding functions](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html)
+for the difference between halfway-away-from-zero and halfway-to-even.
+Two K=2048 cases pair integer products that cancel, leaving a small residual,
+using scales 0.1/0.1/0.01. The former per-term FP32 scaling/reduction failed the
+random case with 8 instead of 9 even after fixing the rounding rule. INT64
+accumulation followed by one final scaling passes it. Two K=33026 cases also
+check positive/negative dot products beyond INT32 range with unsaturated outputs.
+Every case runs twice with C initialized to opposite INT8 endpoints, checking overwrites,
+unchanged input bytes and output guards. Run `make run-mm-int8`; the test is
+also included in `make check` and memcheck in `make sanitize`.
+
+`make run-mm-int8 MM_INT8_ARGS=--large` runs the separate 8192x4096x2048 case,
+also included in `make check-full`. Repeated A halves multiply opposite B halves;
+the remaining term determines a row/column-specific integer output. This gives
+an exact analytic reference for all 33,554,432 outputs without a cubic CPU
+matrix multiply. It uses the reported dimensions/scales, with constructed data;
+the platform's truncated input arrays cannot be replayed verbatim. The kernel
+retains FP32 operations in the order `float(dot) * scale_A * scale_B / scale_C`;
+precombining scales or using double can change half-boundary results.
+
+The original lower-saturation branch assigned +128 before converting to INT8.
+It happened to yield -128 and pass the baseline tests on this A800/compiler;
+the branch now assigns -128 directly to avoid the out-of-range conversion.
+
+`sanitize` runs memory checks on GEMM, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave and sigmoid,
 and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

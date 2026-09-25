@@ -11,7 +11,7 @@ TEST_DIR := tests
 PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
             conv3d_bench mat_vec_mul_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test geglu_test
-BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test
+BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test mm_int8_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS)
 GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_wmma_tiled_bench \
                 gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_aligned_bench \
@@ -26,6 +26,7 @@ GEMM_SCHEDULE_TESTS := $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_fixed_test \
                        $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_four_test \
                        $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_dynamic_test
 GEMM_ARGS ?= 1024 1024 1024 100
+MM_INT8_ARGS ?=
 NSYS ?= $(CUDA_HOME)/bin/nsys
 NSYS_DIR ?= $(BIN_DIR)/nsys
 NSYS_FLAGS ?= --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none
@@ -61,7 +62,7 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k \
         run-relu run-leaky-relu run-silu run-swiglu run-clip run-mat-add \
         run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
-        run-sigmoid run-geglu run-rgb2grayscale run-batched-mm \
+        run-sigmoid run-geglu run-rgb2grayscale run-batched-mm run-mm-int8 \
         run-gemm-tile run-gemm-wmma run-gemm-wmma-tiled run-gemm-cublas run-gemm-compare check-gemm \
         run-gemm-wmma-tiled-pipeline run-gemm-wmma-tiled-pipeline-aligned \
         run-gemm-wmma-tiled-pipeline-aligned-swizzled run-gemm-wmma-tiled-pipeline-multistage \
@@ -329,6 +330,8 @@ run-rgb2grayscale: $(BIN_DIR)/rgb2grayscale_test
 	$<
 run-batched-mm: $(BIN_DIR)/batched_mm_test
 	$<
+run-mm-int8: $(BIN_DIR)/mm_int8_test
+	$< $(MM_INT8_ARGS)
 
 # Small reproducible GPU checks. Every executable returns nonzero on failure.
 check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
@@ -374,14 +377,16 @@ check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/geglu_test
 	$(BIN_DIR)/rgb2grayscale_test
 	$(BIN_DIR)/batched_mm_test
+	$(BIN_DIR)/mm_int8_test
 ifeq ($(WITH_TRITON),1)
 	$(MAKE) check-gemm-triton
 endif
 
-# Large reduction regressions, including the LeetGPU top-k performance shape.
+# Large regressions, including the LeetGPU top-k and INT8 matmul shapes.
 check-full: check
 	$(BIN_DIR)/mse_test
 	$(BIN_DIR)/top_k_test 50000000 100
+	$(BIN_DIR)/mm_int8_test --large
 
 COMPUTE_SANITIZER ?= compute-sanitizer
 sanitize: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
@@ -428,6 +433,7 @@ sanitize: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/interleave_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/sigmoid_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/batched_mm_test
+	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/mm_int8_test
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/mse_test 257
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049
@@ -440,9 +446,10 @@ help:
 	@echo 'all             Build tests and benchmarks (no GPU needed)'
 	@echo 'compile-kernels Compile every src/*.cu independently'
 	@echo 'check           Run small GPU correctness checks'
-	@echo 'check-full      Also run large MSE and top-k regressions'
+	@echo 'check-full      Also run large MSE, top-k and INT8 matmul regressions'
 	@echo 'sanitize        Run selected memory/synchronization checks'
 	@echo 'run-<operator>  Run one test/benchmark with default arguments'
+	@echo 'run-mm-int8     Check INT8 quantization; MM_INT8_ARGS=--large checks 8192x4096x2048'
 	@echo 'check-gemm      Check scalar, tiled, all WMMA variants, and cuBLAS GEMM'
 	@echo 'run-gemm-compare Compare all fourteen GEMMs; GEMM_ARGS="M N K repeats"'
 	@echo 'run-gemm-wmma-tiled-pipeline Run async/double-buffered WMMA; uses GEMM_ARGS'

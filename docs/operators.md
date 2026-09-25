@@ -109,8 +109,21 @@ before consuming outputs on the CPU.
   to select either version in the [shared checks](gemm-triton.md).
 - `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]
   and C[BATCH,M,N], using contiguous row-major storage without broadcasting or
-  transposes. The current kernel adds into C; callers must clear C before each
-  multiplication. Tests use positive dimensions and CPU double references.
+  transposes. The current kernel computes `C += A*B`; clear C before a standalone
+  multiplication, or retain it for accumulation. Tests use CPU double references,
+  including consecutive accumulation and unaligned A/B/C. Zero BATCH/M/N is a
+  no-op; K=0 does not read A/B and preserves finite C numerically. Dimensions
+  are nonnegative and flattened offsets must fit int; input/output storage must
+  not overlap.
+- `mm_int8.cu`: contiguous row-major signed INT8 A[M,K], B[K,N] and C[M,N].
+  Subtract the input zero points and accumulate products in INT64. Convert the
+  completed dot product to FP32, multiply by scale_A then scale_B, and divide by
+  scale_C. Round to nearest with halfway values rounded to even (`nearbyintf`),
+  add zero_point_C, then clamp to [-128,127] and overwrite C. Scales are finite and
+  positive, zero points are in [-128,127], and inputs must keep the intermediate
+  FP32 arithmetic finite. M/N must be positive, K nonnegative, and storage must
+  not overlap between inputs and output. K=0 fills C with zero_point_C without
+  reading A/B. See `make run-mm-int8` for exact CPU-reference checks.
 - `softmax_3kernel.cu` / `softmax_4kernel.cu`: softmax over one float vector, with
   maximum subtraction for stability. Vectorized paths require 16-byte alignment.
 - `mha.cu`: `softmax(Q * K^T / sqrt(d)) * V`, with `Q[M,d]`, `K[N,d]`, `V[N,d]`.
