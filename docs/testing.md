@@ -23,11 +23,12 @@ the best of two warm wrapper wall times, including allocation and freeing.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
-executable; the seven elementwise executables share `tests/elementwise.cpp`. Their small helper
+executable; six elementwise executables share `tests/elementwise.cpp`, while
+sigmoid uses `tests/sigmoid.cpp`. Their small helper
 `tests/test_utils.h` checks CUDA errors, CPU references, output guards, and repeated
-calls, clearing output before each invocation. Input storage is checked for changes;
+calls, initializing output before each invocation. Input storage is checked for changes;
 reversal instead verifies the in-place result and restoration after a second call.
-Guard placement preserves 16-byte output alignment. Tests use positive sizes around
+The shared output helper preserves 16-byte alignment. Tests use positive sizes around
 warp/block boundaries and non-multiples of block sizes.
 
 Copy, addition, reversal, interleave, ReLU, clip and hashes use exact comparisons.
@@ -37,6 +38,21 @@ rtol=3e-6; GEGLU uses atol=5e-6 and rtol=3e-6 to account for float erf cancellat
 and rtol=1e-6. Clip tests include interval
 boundaries and equal bounds; hashes include signed bit patterns and multiple rounds.
 
+`sigmoid_test` retains the basic mixed/zero/negative/positive checks and adds
+warp/block boundaries, a million-element tail, independent unaligned input/output
+pointers, NaN/infinities, signed zeros, tiny inputs and saturation near float exp
+overflow. Every case runs twice on the same buffers with negated inputs on the
+second call, nonzero output poison, output guards and bitwise input-preservation
+checks. It uses a stable CPU double reference with the tolerances above; a dense
+[-80,80] sweep uses relative tolerance only (3e-6) to check tiny normal results.
+NaNs must propagate, infinities map exactly to 0/1, and signed zeros map exactly
+to 0.5. Positive N is required by the existing operator contract. Run the 28
+cases with `make run-sigmoid`; they also run in `make check` and under memcheck
+in `make sanitize`.
+Validated on 2026-09-25 with NVIDIA A800 80GB PCIe, CUDA Toolkit 12.6.20,
+`-O3 -std=c++14 -arch=sm_80`: all 28 cases, the full `make check`, and the
+sigmoid memcheck run passed (zero reported errors).
+
 `batched_mm_test` checks rectangular matrices, distinct data for each batch,
 partial blocks in all three output dimensions, identity and zero matrices, and a
 nonzero final reduction element. It compares with CPU double accumulation using
@@ -44,7 +60,7 @@ atol=1e-5 and rtol=1e-5, clears C before each call, and checks input storage and
 output guards. Run it with `make run-batched-mm`; it also runs in `make check`.
 
 `sanitize` runs memory checks on GEMM, batched matrix multiplication, blur,
-categorical cross entropy, MSE, top-k and interleave,
+categorical cross entropy, MSE, top-k, interleave and sigmoid,
 and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.
 

@@ -13,9 +13,6 @@ static double reference_value(double x, double gate, float lo, float hi) {
   return std::max(x, 0.0);
 #elif defined(TEST_LEAKY_RELU)
   return x >= 0 ? x : 0.01 * x;
-#elif defined(TEST_SIGMOID)
-  return x >= 0 ? 1.0 / (1.0 + std::exp(-x))
-                : std::exp(x) / (1.0 + std::exp(x));
 #elif defined(TEST_GEGLU)
   return x * gate * 0.5 * std::erfc(-gate / std::sqrt(2.0));
 #elif defined(TEST_SILU) || defined(TEST_SWIGLU)

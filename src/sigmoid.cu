@@ -2,10 +2,10 @@
 #include <math.h>
 
 __global__ void sigmoid_kernel(const float *X, float *Y, int N) {
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  const auto tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= N)
     return;
-  Y[tid] = 1 / (1 + exp(-X[tid]));
+  Y[tid] = 1 / (1 + expf(-X[tid]));
 }
 
 // X, Y are device pointers (i.e. pointers to memory on the GPU)
