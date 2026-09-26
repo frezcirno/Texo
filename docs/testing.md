@@ -116,6 +116,12 @@ The original lower-saturation branch assigned +128 before converting to INT8.
 It happened to yield -128 and pass the baseline tests on this A800/compiler;
 the branch now assigns -128 directly to avoid the out-of-range conversion.
 
+Validated on 2026-09-25 with NVIDIA A800 80GB PCIe, CUDA Toolkit 12.6.20,
+`-O3 -std=c++14 -arch=sm_80`: all 56 default cases, the full-size analytic
+regression, and the complete `make check-full` passed. Memcheck passed all 56
+default cases with zero errors. The `sm_75` (T4) build also passed; no physical
+T4 runtime or online resubmission is claimed by these local checks.
+
 `sanitize` runs memory checks on GEMM, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave and sigmoid,
 and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
