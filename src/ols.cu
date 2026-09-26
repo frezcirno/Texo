@@ -71,10 +71,10 @@ void cholesky_decomposion(const double *__restrict__ A, // (N, N)
 
 // solve A @ X = B; launch with one thread to preserve row dependencies.
 template <bool transposeA = false>
-__global__ void solve_x(const double *__restrict__ A, // (N, N)
-                        const double *__restrict__ B, // (N,)
-                        double *__restrict__ X,       // (N, 1)
-                        size_t N) {
+__global__ void triangular_solve_kernel(const double *__restrict__ A, // (N, N)
+                                        const double *__restrict__ B, // (N,)
+                                        double *__restrict__ X,       // (N, 1)
+                                        size_t N) {
   for (int step = threadIdx.x; step < N; step += blockDim.x) {
     int i = transposeA ? N - step - 1 : step;
     double sum = 0.0;
@@ -120,13 +120,13 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
   // solve: L @ z = Xty
   double *z;
   cudaMalloc(&z, n_features * sizeof(double));
-  solve_x<<<1, 1>>>(L, Xty, z, n_features);
+  triangular_solve_kernel<<<1, 1>>>(L, Xty, z, n_features);
 
   // solve: Lt @ beta = z
   // Keep solved coefficients in FP64 while later rows depend on them.
   double *beta_double;
   cudaMalloc(&beta_double, n_features * sizeof(double));
-  solve_x<true><<<1, 1>>>(L, z, beta_double, n_features);
+  triangular_solve_kernel<true><<<1, 1>>>(L, z, beta_double, n_features);
   convert_beta<<<(n_features + 255) / 256, 256>>>(beta_double, beta,
                                                   n_features);
 

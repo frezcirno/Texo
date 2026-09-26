@@ -62,7 +62,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | Scaled dot-product attention | `src/mha.cu` | `make run-attention` |
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
 | Valid 1D cross-correlation | `src/conv1d.cu` | `make run-conv1d` |
-| Matrix-vector multiplication | `src/mat_vec_mul.cu` | `make run-mat-vec` |
+| Matrix-vector multiplication | `src/mv.cu` | `make run-mv` |
 | FP16 GEMM: scalar, tiled, WMMA, multi-warp WMMA, pipelined WMMA, aligned pipeline, swizzled pipeline, multistage pipeline, mainloop scheduling, larger reuse tile, specialized epilogue, large-tile experiments, distributed mainloop, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_wmma_tiled.cu`, `src/gemm_wmma_tiled_pipeline.cu`, `src/gemm_wmma_tiled_pipeline_aligned.cu`, `src/gemm_wmma_tiled_pipeline_aligned_swizzled.cu`, `src/gemm_wmma_tiled_pipeline_multistage.cu`, `src/gemm_wmma_tiled_pipeline_mainloop.cu`, `src/gemm_wmma_tiled_pipeline_reuse.cu`, `src/gemm_wmma_tiled_pipeline_epilogue.cu`, `src/gemm_wmma_tiled_pipeline_large.cu`, `src/gemm_wmma_tiled_pipeline_schedule.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
 | Batched FP32 matrix multiplication | `src/batched_mm.cu` | `make run-batched-mm` |
 | Quantized INT8 matrix multiplication | `src/mm_int8.cu` | `make run-mm-int8` |
@@ -91,7 +91,7 @@ compare multiple Triton versions with CUDA and cuBLAS in one process.
 ## Running individual tests
 
 ```bash
-build/sm_80/mat_vec_mul_bench 4096 1024 100   # M N repeats
+build/sm_80/mv_bench 4096 1024 100   # M N repeats
 build/sm_80/gemm_bench 17 33 19 20           # M N K repeats
 build/sm_80/gemm_cublas_bench 1024 1024 1024 100
 build/sm_80/cat_ce_test 1025 65              # samples classes

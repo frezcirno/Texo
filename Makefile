@@ -9,7 +9,7 @@ SRC_DIR := src
 TEST_DIR := tests
 
 PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
-            conv3d_bench mat_vec_mul_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
+            conv3d_bench mv_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test geglu_test
 BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test mm_int8_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS)
@@ -59,7 +59,7 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
 
 .PHONY: all help compile-kernels check check-full sanitize clean bench \
         run-reduce run-max run-softmax run-attention run-conv2d run-conv3d \
-        run-mat-vec run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k \
+        run-mv run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k \
         run-relu run-leaky-relu run-silu run-swiglu run-clip run-mat-add \
         run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
         run-sigmoid run-geglu run-rgb2grayscale run-batched-mm run-mm-int8 \
@@ -111,7 +111,7 @@ $(BIN_DIR)/conv2d_bench: tests/conv2d.cpp src/conv2d.cu | $(BIN_DIR)
 $(BIN_DIR)/conv3d_bench: tests/conv3d.cpp src/conv3d.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 # This test includes the implementation to instantiate both kernel variants.
-$(BIN_DIR)/mat_vec_mul_bench: tests/mat_vec_mul.cu src/mat_vec_mul.cu | $(BIN_DIR)
+$(BIN_DIR)/mv_bench: tests/mv.cu src/mv.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $< -o $@
 $(BIN_DIR)/gemm_bench: tests/gemm.cu src/gemm.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
@@ -204,7 +204,7 @@ run-conv2d: $(BIN_DIR)/conv2d_bench
 	$<
 run-conv3d: $(BIN_DIR)/conv3d_bench
 	$<
-run-mat-vec: $(BIN_DIR)/mat_vec_mul_bench
+run-mv: $(BIN_DIR)/mv_bench
 	$<
 run-gemm: $(BIN_DIR)/gemm_bench
 	$<
@@ -341,7 +341,7 @@ check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/attention_bench 17 33 16 2 1
 	$(BIN_DIR)/conv2d_bench 17 35 3 5 2 1
 	$(BIN_DIR)/conv3d_bench 9 11 13 3 3 3 2 1
-	$(BIN_DIR)/mat_vec_mul_bench --check-only
+	$(BIN_DIR)/mv_bench --check-only
 	$(BIN_DIR)/gemm_bench --check-only
 	$(BIN_DIR)/gemm_tile_bench --check-only
 	$(BIN_DIR)/gemm_wmma_bench --check-only

@@ -140,6 +140,48 @@ memcheck/racecheck/synccheck; `WITH_TRITON=1` also includes it in `make sanitize
 See [Triton GEMM](gemm-triton.md) for the separate performance comparison target
 and its Python submission overhead.
 
+## Matrix-vector dispatch
+
+`mv_bench --check-only` checks 28 shapes through `solve`, the block-per-row
+kernel, and two warp-per-row block sizes. Eleven additional shapes cross the
+dispatch boundaries at M=64/1024 and N=1024/2048/4096, including partial rows and
+columns. All four variants retain the CPU double reference, output guards, and
+two consecutive calls without clearing output. The tolerance remains
+`1e-5 + 2e-6 * sum(abs(A*x))`.
+
+The selector uses a 256-thread block per row for N >= 1024 when M <= 64,
+N >= 2048 when 65 <= M <= 1024, and N >= 4096 for larger M. Shorter rows use
+one warp per row in 256-thread blocks. The rule is an A800 heuristic, not an
+optimal threshold for every shape or GPU. Both kernels remain available for
+direct comparison in `make run-mv`.
+
+Measured on 2026-09-26 on NVIDIA A800 80GB PCIe, CUDA Toolkit 12.6.20,
+`-O3 -std=c++14 -arch=sm_80`, on an otherwise idle GPU. Before/after sweeps
+covered 32 shapes: M in {16,64,256,1024,4096}, N in
+{128,256,512,1024,2048,4096}, plus 4096x64 and 16x16384. Each variant used
+10 warmup launches and the median per-launch CUDA Event time of five batches
+of 500 launches, reusing the same buffers. Allocation, copies, and the CPU
+reference are excluded; launch submission gaps can affect small timings.
+
+| M x N | Previous warp-only solve (us) | Dispatched solve (us) | Selected kernel |
+| --- | ---: | ---: | --- |
+| 16 x 1024 | 3.533 | 3.178 | block |
+| 64 x 1024 | 3.535 | 3.437 | block |
+| 256 x 2048 | 4.927 | 4.483 | block |
+| 1024 x 2048 | 6.281 | 5.829 | block |
+| 4096 x 2048 | 16.114 | 16.255 | warp |
+| 4096 x 64 | 3.494 | 3.598 | warp |
+| 4096 x 1024 | 7.381 | 7.516 | warp |
+| 1024 x 4096 | 9.347 | 7.631 | block |
+| 4096 x 4096 | 46.232 | 42.082 | block |
+| 16 x 16384 | 16.835 | 5.503 | block |
+
+All 32 measured shapes passed correctness before and after the change. Small
+timing differences are not evidence of a universal crossover point.
+The 28-shape suite also passed Compute Sanitizer memcheck and synccheck with
+zero errors on the A800. The `sm_75` build passed compilation; these results
+do not include a physical T4 runtime or a T4-tuned performance threshold.
+
 ## Architecture and device selection
 
 ```bash
@@ -216,7 +258,7 @@ build/sm_80/softmax_bench 1025 10 3
 build/sm_80/attention_bench 17 33 16 10 3
 build/sm_80/conv2d_bench 17 35 3 5 10 3
 build/sm_80/conv3d_bench 9 11 13 3 3 3 10 3
-build/sm_80/mat_vec_mul_bench --check-only
+build/sm_80/mv_bench --check-only
 build/sm_80/gemm_bench --check-only
 build/sm_80/gauss_blur_test 17 35 2 4
 build/sm_80/mse_test 50000000

@@ -25,10 +25,10 @@ template <int BLOCK_SIZE> __device__ inline float block_sum(float val) {
 }
 
 template <int BLOCK_SIZE>
-__global__ void mat_vec_mul(const float *__restrict__ A, // (M, N)
-                            const float *__restrict__ B, // (N,)
-                            float *__restrict__ output,  // (M,)
-                            int M, int N, int nnz) {
+__global__ void mv_one_block_per_row(const float *__restrict__ A, // (M, N)
+                                     const float *__restrict__ B, // (N,)
+                                     float *__restrict__ C,       // (M,)
+                                     int M, int N) {
   const int row = blockIdx.x;
   float sum = 0.0f;
 
@@ -40,13 +40,14 @@ __global__ void mat_vec_mul(const float *__restrict__ A, // (M, N)
   sum = block_sum<BLOCK_SIZE>(sum);
 
   if (threadIdx.x == 0) {
-    output[row] = sum;
+    C[row] = sum;
   }
 }
 
-__global__ void mat_vec_mul_warp(const float *__restrict__ A,
-                                 const float *__restrict__ x,
-                                 float *__restrict__ y, int M, int N) {
+__global__ void mv_one_warp_per_row(const float *__restrict__ A, // (M, N)
+                                    const float *__restrict__ B, // (N,)
+                                    float *__restrict__ C,       // (M,)
+                                    int M, int N) {
 
   const int lane = threadIdx.x & 31;
   const int warp = threadIdx.x >> 5;
@@ -60,13 +61,13 @@ __global__ void mat_vec_mul_warp(const float *__restrict__ A,
 
   float sum = 0.0f;
   for (int i = lane; i < N; i += 32) {
-    sum += A[row * N + i] * x[i];
+    sum += A[row * N + i] * B[i];
   }
 
   sum = warp_sum(sum);
 
   if (lane == 0) {
-    y[row] = sum;
+    C[row] = sum;
   }
 }
 
@@ -78,6 +79,12 @@ extern "C" void solve(const float *A, // (M, N)
   if (M <= 0) {
     return;
   }
-  // The test also benchmarks mat_vec_mul<256> (one block per row).
-  mat_vec_mul_warp<<<1 + (M - 1) / 8, 256>>>(A, x, y, M, N);
+  // A800 measurements: short rows favor warp-only reduction. With fewer
+  // rows, a whole block per row pays off at a smaller column count.
+  const int block_min_columns = M <= 64 ? 1024 : (M <= 1024 ? 2048 : 4096);
+  if (N >= block_min_columns) {
+    mv_one_block_per_row<256><<<M, 256>>>(A, x, y, M, N);
+  } else {
+    mv_one_warp_per_row<<<(M + 7) / 8, 256>>>(A, x, y, M, N);
+  }
 }

@@ -10,7 +10,7 @@
 #include <vector>
 
 // Include once so the benchmark can instantiate and compare the actual kernels.
-#include "../src/mat_vec_mul.cu"
+#include "../src/mv.cu"
 
 #define CUDA_CHECK(call) do { \
   cudaError_t error = (call); \
@@ -28,11 +28,11 @@ static void launch(int version, const float* a, const float* x, float* y,
     solve(a, x, y, m, n, 0);
   } else if (m > 0) {
     if (version == 1)
-      mat_vec_mul<256><<<m, 256>>>(a, x, y, m, n, 0);
+      mv_one_block_per_row<256><<<m, 256>>>(a, x, y, m, n, 0);
     else {
       int threads = version == 2 ? 256 : 128;
       int warps = threads / 32;
-      mat_vec_mul_warp<<<1 + (m - 1) / warps, threads>>>(a, x, y, m, n);
+      mv_one_warp_per_row<<<1 + (m - 1) / warps, threads>>>(a, x, y, m, n);
     }
   }
   CUDA_CHECK(cudaGetLastError());
@@ -149,7 +149,11 @@ int main(int argc, char** argv) {
   } else {
     const std::pair<int, int> edges[] = {
       {0, 8}, {1, 0}, {1, 1}, {7, 31}, {8, 32}, {9, 33},
-      {17, 127}, {31, 128}, {33, 129}, {9, 255}, {17, 256}, {19, 257}, {3, 4097}
+      {17, 127}, {31, 128}, {33, 129}, {9, 255}, {17, 256}, {19, 257}, {3, 4097},
+      // Cross each dispatch threshold, including partial rows/columns.
+      {63, 1023}, {64, 1024}, {64, 1025}, {65, 1024},
+      {1023, 2047}, {1024, 2048}, {1024, 2049}, {1025, 2048},
+      {1025, 4095}, {1025, 4096}, {1025, 4097}
     };
     for (auto shape : edges) passed &= run_case(shape.first, shape.second, 0);
     const std::pair<int, int> shapes[] = {{4096, 64}, {4096, 1024}, {1024, 4096}, {16, 16384}};

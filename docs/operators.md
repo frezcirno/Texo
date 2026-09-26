@@ -41,9 +41,13 @@ before consuming outputs on the CPU.
 - `mat_add.cu`: elementwise addition of two float `[N,N]` matrices.
 - `mat_copy.cu`: copy a float `[N,N]` matrix. N is the side length, not the
   element count. Both square-matrix examples require positive N and N*N fitting int.
-- `mat_vec_mul.cu`: `A[M,N] * x[N] -> y[M]`, float. A warp per row is the default;
-  the test also compares a block per row and different block sizes. `nnz` is a
-  retained, unused parameter; this is dense storage, not CSR/COO sparse storage.
+- `mv.cu`: `A[M,N] * x[N] -> y[M]`, float. `solve` uses a 256-thread block per
+  row when N is at least 1024 (M <= 64), 2048 (65 <= M <= 1024), or 4096
+  (M > 1024); otherwise it uses one warp per row, eight rows per block.
+  These are A800 performance heuristics; other GPUs may favor other thresholds.
+  Both paths overwrite y. M <= 0 is a no-op; N=0 writes zeros. M*N must fit int.
+  The test compares both kernels with a CPU double reference. `nnz` is a retained,
+  unused parameter; this is dense storage, not CSR/COO sparse storage.
 - `gemm.cu`, `gemm_tile.cu`, `gemm_wmma.cu`, `gemm_wmma_tiled.cu`, `gemm_cublas.cu`:
   row-major `C = alpha * A * B + beta * C`, with `A[M,K]`, `B[K,N]`, `C[M,N]`.
   Inputs and output use FP16 with FP32 accumulation. `C` is read only when
