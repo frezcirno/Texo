@@ -1,4 +1,5 @@
 #include <cuda_runtime.h>
+#include <math.h>
 
 template <typename T> __device__ inline T warp_sum(T val) {
 #pragma unroll
@@ -27,35 +28,35 @@ template <int BLOCK_SIZE, typename T> __device__ inline T block_sum(T val) {
 
 template <int BLOCK_SIZE>
 __global__ void sum_kernel(const float *__restrict__ input,
-                           float *__restrict__ output, int N) {
-  int tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
-  int stride = gridDim.x * BLOCK_SIZE;
+                           float *__restrict__ output, double alpha, int N) {
+  const size_t tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
+  const size_t stride = gridDim.x * BLOCK_SIZE;
 
-  float sum = 0.0f;
+  double sum = 0.0f;
 
   int N4 = N / 4;
   const float4 *input4 = reinterpret_cast<const float4 *>(input);
   for (int i = tid; i < N4; i += stride) {
     float4 v = input4[i];
-    sum += v.x + v.y + v.z + v.w;
+    sum += alpha * (v.x + v.y + v.z + v.w);
   }
   int tail_base = N4 * 4;
   if (tail_base + tid < N) {
-    sum += input[tail_base + tid];
+    sum += alpha * input[tail_base + tid];
   }
 
   sum = block_sum<BLOCK_SIZE>(sum);
-  if (threadIdx.x == 0)
+  if (threadIdx.x == 0) {
     atomicAdd(output, sum);
+  }
 }
 
-extern "C" void solve(const float *input, float *output, int N) {
-  cudaMemsetAsync(output, 0, sizeof(float));
-  if (N <= 0)
-    return;
-  constexpr int BLOCK_SIZE = 256;
-  // Few hundred blocks: enough to fill A800's 108 SMs, few enough to keep
-  // atomicAdd contention on the single output negligible.
-  constexpr int GRID_SIZE = 432;
-  sum_kernel<BLOCK_SIZE><<<GRID_SIZE, BLOCK_SIZE>>>(input, output, N);
+// Monte Carlo Integration
+// y_samples, result are device pointers
+extern "C" void solve(const float *y_samples, // (n_samples,)
+                      float *result,          // (1,)
+                      float a, float b, int n_samples) {
+  // sum(y_samples) * (b - a) / n_samples
+  sum_kernel<256><<<(n_samples + 255) / 256, 256>>>(
+      y_samples, result, (b - a) / n_samples, n_samples);
 }
