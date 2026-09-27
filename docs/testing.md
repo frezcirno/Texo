@@ -178,8 +178,9 @@ reference are excluded; launch submission gaps can affect small timings.
 
 All 32 measured shapes passed correctness before and after the change. Small
 timing differences are not evidence of a universal crossover point.
-The 28-shape suite also passed Compute Sanitizer memcheck and synccheck with
-zero errors on the A800. The `sm_75` build passed compilation; these results
+The complete `make check` passed. The 28-shape suite also passed Compute
+Sanitizer memcheck and synccheck with zero errors on the A800. The `sm_75`
+build passed compilation; these results
 do not include a physical T4 runtime or a T4-tuned performance threshold.
 
 ## Architecture and device selection

@@ -28,7 +28,7 @@ static void launch(int version, const float* a, const float* x, float* y,
     solve(a, x, y, m, n, 0);
   } else if (m > 0) {
     if (version == 1)
-      mv_one_block_per_row<256><<<m, 256>>>(a, x, y, m, n, 0);
+      mv_one_block_per_row<256><<<m, 256>>>(a, x, y, m, n);
     else {
       int threads = version == 2 ? 256 : 128;
       int warps = threads / 32;
