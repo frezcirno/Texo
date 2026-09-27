@@ -11,8 +11,8 @@ TEST_DIR := tests
 PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
             conv3d_bench mv_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test geglu_test
-BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test mm_int8_test
-PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS)
+BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test mm_int8_test lr_test
+PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS) lr_newton_test
 GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_wmma_tiled_bench \
                 gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_aligned_bench \
                 gemm_wmma_tiled_pipeline_aligned_swizzled_bench gemm_wmma_tiled_pipeline_multistage_bench \
@@ -62,7 +62,7 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-mv run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k \
         run-relu run-leaky-relu run-silu run-swiglu run-clip run-mat-add \
         run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
-        run-sigmoid run-geglu run-rgb2grayscale run-batched-mm run-mm-int8 \
+        run-sigmoid run-geglu run-rgb2grayscale run-batched-mm run-mm-int8 run-lr \
         run-gemm-tile run-gemm-wmma run-gemm-wmma-tiled run-gemm-cublas run-gemm-compare check-gemm \
         run-gemm-wmma-tiled-pipeline run-gemm-wmma-tiled-pipeline-aligned \
         run-gemm-wmma-tiled-pipeline-aligned-swizzled run-gemm-wmma-tiled-pipeline-multistage \
@@ -186,8 +186,12 @@ $(BIN_DIR)/clip_test: TEST_DEFINE := TEST_CLIP
 $(BIN_DIR)/geglu_test: TEST_DEFINE := TEST_GEGLU
 $(addprefix $(BIN_DIR)/,$(ELEMENTWISE_TESTS)): $(BIN_DIR)/%_test: tests/elementwise.cpp src/%.cu tests/test_utils.h | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) -D$(TEST_DEFINE) $(filter %.cpp %.cu,$^) -o $@
+# Exercise both optimizers even if the source's default selection is changed.
+$(BIN_DIR)/lr_test: NVCCFLAGS += -DLR_OPTIMIZER='"GD"'
 $(addprefix $(BIN_DIR)/,$(BASIC_TESTS)): $(BIN_DIR)/%_test: tests/%.cpp src/%.cu tests/test_utils.h | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $(filter %.cpp %.cu,$^) -o $@
+$(BIN_DIR)/lr_newton_test: tests/lr.cpp src/lr.cu tests/test_utils.h | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -DLR_OPTIMIZER='"Newton"' $(filter %.cpp %.cu,$^) -o $@
 
 $(BIN_DIR)/reduce_max_compare: benchmarks/reduce_max.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $< -o $@
@@ -332,6 +336,9 @@ run-batched-mm: $(BIN_DIR)/batched_mm_test
 	$<
 run-mm-int8: $(BIN_DIR)/mm_int8_test
 	$< $(MM_INT8_ARGS)
+run-lr: $(BIN_DIR)/lr_test $(BIN_DIR)/lr_newton_test
+	$(BIN_DIR)/lr_test
+	$(BIN_DIR)/lr_newton_test
 
 # Small reproducible GPU checks. Every executable returns nonzero on failure.
 check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
@@ -378,6 +385,8 @@ check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/rgb2grayscale_test
 	$(BIN_DIR)/batched_mm_test
 	$(BIN_DIR)/mm_int8_test
+	$(BIN_DIR)/lr_test
+	$(BIN_DIR)/lr_newton_test
 ifeq ($(WITH_TRITON),1)
 	$(MAKE) check-gemm-triton
 endif
@@ -434,6 +443,8 @@ sanitize: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/sigmoid_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/batched_mm_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/mm_int8_test
+	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --error-exitcode 1 $(BIN_DIR)/lr_test
+	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --error-exitcode 1 $(BIN_DIR)/lr_newton_test
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/mse_test 257
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049

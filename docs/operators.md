@@ -128,6 +128,27 @@ before consuming outputs on the CPU.
   FP32 arithmetic finite. M/N must be positive, K nonnegative, and storage must
   not overlap between inputs and output. K=0 fills C with zero_point_C without
   reading A/B. See `make run-mm-int8` for exact CPU-reference checks.
+- `lr.cu`: binary logistic regression with contiguous FP32 X[samples,features],
+  y[samples] in {0,1}, and overwritten beta[features]. Samples/features must be
+  positive, X finite, and inputs/output must not overlap. No intercept is added;
+  all coefficients are penalized. The assumed objective is **SUM** of binary
+  cross entropy plus `1e-6/2 * ||beta||^2`. This regularization matches the supplied
+  separable regression case but is not specified by the public LeetGPU statement;
+  it is an explicit local assumption, not a verified platform contract.
+  Set the `optimizer` string in `solve` to `"GD"` (default) or `"Newton"`;
+  tests override it with the `LR_OPTIMIZER` compiler definition. Both use FP64
+  training parameters and gradients, max-absolute column scaling, and `lambda * theta / scale^2`
+  for the L2 gradient in scaled coordinates. Newton additionally adds
+  `lambda / scale^2` to the Hessian diagonal before the Cholesky solve.
+  A gradient-based step search halves steps that cross the directional minimum
+  and doubles GD's next trial after acceptance; Newton tries a full step each
+  iteration and damps it when needed. Stopping uses the regularized
+  gradient in original coefficient coordinates; 100,000 updates/64 backtracks
+  remain safety caps, so arbitrary ill-conditioned inputs are not guaranteed to
+  converge within those caps. Input buffers are preserved. `make run-lr` runs
+  both optimizers against an independent CPU Newton reference, including the
+  supplied platform coefficients, zero/duplicate columns, scaling, tails, and
+  repeated calls.
 - `softmax_3kernel.cu` / `softmax_4kernel.cu`: softmax over one float vector, with
   maximum subtraction for stability. Vectorized paths require 16-byte alignment.
 - `mha.cu`: `softmax(Q * K^T / sqrt(d)) * V`, with `Q[M,d]`, `K[N,d]`, `V[N,d]`.

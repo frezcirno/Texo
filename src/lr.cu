@@ -309,9 +309,9 @@ __global__ void max_scale_kernel(T *__restrict__ input,  // (M, N)
   }
 }
 
-template <typename T>
-__global__ void scale_kernel(T *__restrict__ input,       // (N,)
-                             const T *__restrict__ scale, // (N,)
+template <typename T, typename Tscale>
+__global__ void scale_kernel(T *__restrict__ input,            // (N,)
+                             const Tscale *__restrict__ scale, // (N,)
                              int N) {
   const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= N)
@@ -319,15 +319,92 @@ __global__ void scale_kernel(T *__restrict__ input,       // (N,)
   input[tid] /= scale[tid];
 }
 
+// beta = theta / scale，所以 L2 梯度为 lambda * theta / scale^2。
+// stats[0] 为原始 beta 坐标下的最大绝对梯度，stats[1] 用于步长回溯。
+__global__ void add_l2_gradient_kernel(double *__restrict__ gradient,
+                                       const double *__restrict__ theta,
+                                       const float *__restrict__ scale,
+                                       const double *direction,
+                                       double *__restrict__ stats,
+                                       double lambda, int n_features) {
+  const int j = blockIdx.x * blockDim.x + threadIdx.x;
+  if (j >= n_features)
+    return;
+  const double s = double(scale[j]);
+  const double g = gradient[j] + lambda * theta[j] / (s * s);
+  gradient[j] = g;
+  atomic_max(stats, fabs(s * g));
+  if (direction)
+    atomicAdd(stats + 1, g * direction[j]);
+}
+
+// L2 对 Hessian 的修正：对角线加 lambda / scale^2。
+__global__ void add_l2_hessian_kernel(double *__restrict__ hessian,
+                                      const float *__restrict__ scale,
+                                      double lambda, int n_features) {
+  const int j = blockIdx.x * blockDim.x + threadIdx.x;
+  if (j < n_features) {
+    const double s = double(scale[j]);
+    hessian[size_t(j) * n_features + j] += lambda / (s * s);
+  }
+}
+
+// 在临时参数上试走一步；若越过该方向的最低点，就减半步长重试。
+bool backtracking_fn(const float *X_scaled, // (n_samples, n_features)
+                     const float *y,        // (n_samples,)
+                     const double *beta_double, const double *direction,
+                     const float *scale, double *prediction, double *trial_beta,
+                     double *trial_gradient, double *stats, int n_samples,
+                     int n_features, double lambda, double tolerance,
+                     double &step_size) {
+  for (int retry = 0; retry < 64; retry++) {
+    cudaMemcpy(trial_beta, beta_double, n_features * sizeof(*trial_beta),
+               cudaMemcpyDeviceToDevice);
+    // beta -= step_size * direction
+    subtract_kernel<<<(n_features + 255) / 256, 256>>>(trial_beta, direction,
+                                                       step_size, n_features);
+    // prediction = sigmoid(X @ beta)
+    forward_kernel<<<(n_samples + 7) / 8, 256>>>(
+        X_scaled, trial_beta, prediction, n_samples, n_features);
+
+    // gradient = loss'(X, prediction)
+    gradient_fn<true>(X_scaled, prediction, y, trial_gradient, n_features, 1,
+                      n_samples);
+
+    // gradient += lambda * beta / scale
+    cudaMemset(stats, 0, 2 * sizeof(*stats));
+    add_l2_gradient_kernel<<<(n_features + 255) / 256, 256>>>(
+        trial_gradient, trial_beta, scale, direction, stats, lambda,
+        n_features);
+    double stats_cpu[2];
+    cudaMemcpy(stats_cpu, stats, sizeof(stats_cpu), cudaMemcpyDeviceToHost);
+
+    // 沿 -direction 的方向导数为 -dot(gradient, direction)。
+    if (std::isfinite(stats_cpu[1]) &&
+        (stats_cpu[1] >= 0 || stats_cpu[0] <= tolerance)) {
+      return true;
+    }
+    step_size *= 0.5;
+  }
+  return false;
+}
+
 // X, y, beta are device pointers
 extern "C" void solve(const float *X, // (n_samples, n_features)
                       const float *y, // (n_samples,)
                       float *beta,    // (n_features,)
                       int n_samples, int n_features) {
-  constexpr auto lr = 0.01;
-  constexpr auto max_steps = 1000000;
-  constexpr auto tolerance = 0.00001;
+  constexpr auto lr = 0.1;
+  constexpr auto max_steps = 100000;
+  // 假设目标为损失总和 + lambda/2 * ||beta||^2；平台未明确给出 lambda。
+  constexpr double lambda = 1e-6;
+  // 用 L2 的梯度界控制系数误差，避免原来的 1e-5 阈值过早停止。
+  const double tolerance = lambda * 1e-3 / sqrt(double(n_features));
+#ifdef LR_OPTIMIZER // 仅供测试分别编译两种优化器。
+  const std::string optimizer = LR_OPTIMIZER;
+#else
   const std::string optimizer = "GD";
+#endif
 
   float *X_scaled; // (n_samples, n_features)
   cudaMalloc(&X_scaled, n_samples * n_features * sizeof(*X_scaled));
@@ -349,28 +426,40 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
   double *delta; // (n_features,)
   cudaMalloc(&delta, n_features * sizeof(*delta));
 
+  double *beta1; // FP64 训练参数，最后还原尺度并转换为 float。
+  cudaMalloc(&beta1, n_features * sizeof(*beta1));
+  double *trial_beta;
+  cudaMalloc(&trial_beta, n_features * sizeof(*trial_beta));
+  double *trial_gradient;
+  cudaMalloc(&trial_gradient, n_features * sizeof(*trial_gradient));
+  double *stats; // 回溯时的最大绝对梯度、梯度与更新方向的点积。
+  cudaMalloc(&stats, 2 * sizeof(*stats));
+
   max_scale_kernel<256>
       <<<n_features, 256>>>(X_scaled, scale, n_samples, n_features);
 
-  cudaMemset(beta, 0, n_features * sizeof(float));
+  cudaMemset(beta1, 0, n_features * sizeof(*beta1));
+  double gd_step_size = lr / double(n_samples);
 
   for (int step = 0; step < max_steps; step++) {
     // prediction = sigmoid(X @ beta)
-    forward_kernel<<<(n_samples + 7) / 8, 256>>>(X_scaled, beta, prediction,
+    forward_kernel<<<(n_samples + 7) / 8, 256>>>(X_scaled, beta1, prediction,
                                                  n_samples, n_features);
 
     // gradient = Xt @ (prediction - y)
     gradient_fn<true>(X_scaled, prediction, y, gradient, n_features, 1,
                       n_samples);
-
-    // max_gradient = max(gradient)
+    // gradient += lambda * beta / scale。
+    // 加上 L2 梯度，同时计算原始 beta 坐标下的最大绝对梯度。
     cudaMemset(max_gradient, 0, sizeof(*max_gradient));
-    max_abs_kernel<256>
-        <<<(n_features + 255) / 256, 256>>>(gradient, max_gradient, n_features);
+    add_l2_gradient_kernel<<<(n_features + 255) / 256, 256>>>(
+        gradient, beta1, scale, nullptr, max_gradient, lambda, n_features);
+
+    // max_gradient = max(abs(scale * gradient))，还原到原始 beta 坐标。
     double max_gradient_cpu;
     cudaMemcpy(&max_gradient_cpu, max_gradient, sizeof(max_gradient_cpu),
                cudaMemcpyDeviceToHost);
-    if (max_gradient_cpu < n_samples * tolerance) {
+    if (max_gradient_cpu <= tolerance) {
       break;
     }
 
@@ -378,6 +467,8 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
       // W = diag(pi * (1 - pi))
       // hessian = Xt @ W @ X
       hessian_fn(X_scaled, prediction, hessian, n_samples, n_features);
+      add_l2_hessian_kernel<<<(n_features + 255) / 256, 256>>>(
+          hessian, scale, lambda, n_features);
 
       // solve: hessian @ delta = gradient
       // solve: L @ Lt = hessian
@@ -387,18 +478,34 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
       // solve: Lt @ delta = z
       triangular_solve_kernel<true><<<1, 1>>>(L, z, delta, n_features);
 
+      double step_size = 1.0;
+      if (!backtracking_fn(X_scaled, y, beta1, delta, scale, prediction,
+                           trial_beta, trial_gradient, stats, n_samples,
+                           n_features, lambda, tolerance, step_size)) {
+        break;
+      }
+
       // beta -= lr * delta
-      subtract_kernel<<<(n_features + 255) / 256, 256>>>(beta, delta, lr,
-                                                         n_features);
+      // 这里使用回溯后的实际步长。
+      subtract_kernel<<<(n_features + 255) / 256, 256>>>(beta1, delta,
+                                                         step_size, n_features);
     } else {
       // GD
-      // beta -= lr * delta
+      if (!backtracking_fn(X_scaled, y, beta1, gradient, scale, prediction,
+                           trial_beta, trial_gradient, stats, n_samples,
+                           n_features, lambda, tolerance, gd_step_size)) {
+        break;
+      }
+      // beta -= lr * gradient / n_samples
+      // gd_step_size 已包含样本数归一化和回溯调整。
       subtract_kernel<<<(n_features + 255) / 256, 256>>>(
-          beta, gradient, lr / double(n_samples), n_features);
+          beta1, gradient, gd_step_size, n_features);
+      gd_step_size *= 2;
     }
   }
 
-  scale_kernel<<<(n_features + 255) / 256, 256>>>(beta, scale, n_features);
+  scale_kernel<<<(n_features + 255) / 256, 256>>>(beta1, scale, n_features);
+  convert_beta<<<(n_features + 255) / 256, 256>>>(beta1, beta, n_features);
 
   cudaFree(X_scaled);
   cudaFree(scale);
@@ -408,4 +515,8 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
   cudaFree(L);
   cudaFree(z);
   cudaFree(delta);
+  cudaFree(beta1);
+  cudaFree(trial_beta);
+  cudaFree(trial_gradient);
+  cudaFree(stats);
 }
