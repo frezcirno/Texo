@@ -289,10 +289,12 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
                       float *beta,    // (n_features,)
                       int n_samples, int n_features) {
   constexpr auto lr = 0.01;
-  constexpr auto max_steps = 100000;
-  constexpr auto tolerance = 0.0001;
-  const std::string optimizer = "GD";
+  constexpr auto max_steps = 1000000;
+  constexpr auto tolerance = 0.00001;
+  const std::string optimizer = "Newton";
 
+  float *scale; // (n_features,)
+  cudaMalloc(&scale, n_samples * sizeof(*scale));
   double *prediction; // (n_samples,)
   cudaMalloc(&prediction, n_samples * sizeof(*prediction));
   double *gradient; // (n_features,)
@@ -306,6 +308,15 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
   cudaMalloc(&z, n_features * sizeof(double));
   double *delta; // (n_features,)
   cudaMalloc(&delta, n_features * sizeof(*delta));
+
+  max_abs_kernel<256>
+      <<<(n_features + 255) / 256, 256>>>(X, max_gradient, n_features);
+  double max_gradient_cpu;
+  cudaMemcpy(&max_gradient_cpu, max_gradient, sizeof(max_gradient_cpu),
+             cudaMemcpyDeviceToHost);
+  if (max_gradient_cpu < n_samples * tolerance) {
+    break;
+  }
 
   cudaMemset(beta, 0, n_features * sizeof(float));
 
@@ -352,6 +363,7 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
     }
   }
 
+  cudaFree(scale);
   cudaFree(prediction);
   cudaFree(gradient);
   cudaFree(hessian);

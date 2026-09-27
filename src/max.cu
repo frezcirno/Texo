@@ -56,7 +56,7 @@ template <> __device__ double atomic_max<double>(double *addr, double val) {
 }
 
 template <int BLOCK_SIZE, typename T>
-__global__ void max_abs_kernel(const T *__restrict__ input, T *__restrict__ output,
+__global__ void max_kernel(const T *__restrict__ input, T *__restrict__ output,
                            int N) {
   int tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
   int stride = gridDim.x * BLOCK_SIZE;
@@ -80,5 +80,5 @@ extern "C" void max_kernel(const float *input, float *output, int N) {
   // Few hundred blocks: enough to fill A800's 108 SMs, few enough to keep
   // atomic contention on the single output negligible.
   constexpr int GRID_SIZE = 432;
-  max_abs_kernel<BLOCK_SIZE><<<GRID_SIZE, BLOCK_SIZE>>>(input, output, N);
+  max_kernel<BLOCK_SIZE><<<GRID_SIZE, BLOCK_SIZE>>>(input, output, N);
 }
