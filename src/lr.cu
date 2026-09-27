@@ -13,10 +13,10 @@ template <typename T> __device__ inline T warp_sum(T val) {
 }
 
 template <typename T1, typename T2, typename Tout>
-__global__ void mv_sigmoid_kernel(const T1 *__restrict__ A, // (M, N)
-                                  const T2 *__restrict__ B, // (N,)
-                                  Tout *__restrict__ C,     // (M,)
-                                  size_t M, size_t N) {
+__global__ void forward_kernel(const T1 *__restrict__ A, // (M, N)
+                               const T2 *__restrict__ B, // (N,)
+                               Tout *__restrict__ C,     // (M,)
+                               size_t M, size_t N) {
   // C = sigmoid(A @ B)
   const size_t lane = threadIdx.x & 31;
   const size_t warp = threadIdx.x >> 5;
@@ -283,6 +283,42 @@ __global__ void max_abs_kernel(const T *__restrict__ input,
   }
 }
 
+template <int BLOCK_SIZE, typename T>
+__global__ void max_scale_kernel(T *__restrict__ input,  // (M, N)
+                                 T *__restrict__ output, // (N,)
+                                 int M, int N) {
+  const size_t col = blockIdx.x;
+  T max_res = -INFINITY;
+
+  for (int i = threadIdx.x; i < M; i += BLOCK_SIZE) {
+    max_res = max(max_res, abs(input[i * N + col]));
+  }
+
+  max_res = block_max<BLOCK_SIZE>(max_res);
+  if (max_res == 0) {
+    max_res = 1.0;
+  }
+  if (threadIdx.x == 0) {
+    output[col] = max_res;
+  }
+
+  __syncthreads();
+
+  for (int i = threadIdx.x; i < M; i += BLOCK_SIZE) {
+    input[i * N + col] /= output[col];
+  }
+}
+
+template <typename T>
+__global__ void scale_kernel(T *__restrict__ input,       // (N,)
+                             const T *__restrict__ scale, // (N,)
+                             int N) {
+  const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= N)
+    return;
+  input[tid] /= scale[tid];
+}
+
 // X, y, beta are device pointers
 extern "C" void solve(const float *X, // (n_samples, n_features)
                       const float *y, // (n_samples,)
@@ -291,10 +327,14 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
   constexpr auto lr = 0.01;
   constexpr auto max_steps = 1000000;
   constexpr auto tolerance = 0.00001;
-  const std::string optimizer = "Newton";
+  const std::string optimizer = "GD";
 
+  float *X_scaled; // (n_samples, n_features)
+  cudaMalloc(&X_scaled, n_samples * n_features * sizeof(*X_scaled));
+  cudaMemcpy(X_scaled, X, n_samples * n_features * sizeof(*X_scaled),
+             cudaMemcpyDeviceToDevice);
   float *scale; // (n_features,)
-  cudaMalloc(&scale, n_samples * sizeof(*scale));
+  cudaMalloc(&scale, n_features * sizeof(*scale));
   double *prediction; // (n_samples,)
   cudaMalloc(&prediction, n_samples * sizeof(*prediction));
   double *gradient; // (n_features,)
@@ -309,24 +349,19 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
   double *delta; // (n_features,)
   cudaMalloc(&delta, n_features * sizeof(*delta));
 
-  max_abs_kernel<256>
-      <<<(n_features + 255) / 256, 256>>>(X, max_gradient, n_features);
-  double max_gradient_cpu;
-  cudaMemcpy(&max_gradient_cpu, max_gradient, sizeof(max_gradient_cpu),
-             cudaMemcpyDeviceToHost);
-  if (max_gradient_cpu < n_samples * tolerance) {
-    break;
-  }
+  max_scale_kernel<256>
+      <<<n_features, 256>>>(X_scaled, scale, n_samples, n_features);
 
   cudaMemset(beta, 0, n_features * sizeof(float));
 
   for (int step = 0; step < max_steps; step++) {
     // prediction = sigmoid(X @ beta)
-    mv_sigmoid_kernel<<<(n_samples + 7) / 8, 256>>>(X, beta, prediction,
-                                                    n_samples, n_features);
+    forward_kernel<<<(n_samples + 7) / 8, 256>>>(X_scaled, beta, prediction,
+                                                 n_samples, n_features);
 
     // gradient = Xt @ (prediction - y)
-    gradient_fn<true>(X, prediction, y, gradient, n_features, 1, n_samples);
+    gradient_fn<true>(X_scaled, prediction, y, gradient, n_features, 1,
+                      n_samples);
 
     // max_gradient = max(gradient)
     cudaMemset(max_gradient, 0, sizeof(*max_gradient));
@@ -342,7 +377,7 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
     if (optimizer == "Newton") {
       // W = diag(pi * (1 - pi))
       // hessian = Xt @ W @ X
-      hessian_fn(X, prediction, hessian, n_samples, n_features);
+      hessian_fn(X_scaled, prediction, hessian, n_samples, n_features);
 
       // solve: hessian @ delta = gradient
       // solve: L @ Lt = hessian
@@ -363,6 +398,9 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
     }
   }
 
+  scale_kernel<<<(n_features + 255) / 256, 256>>>(beta, scale, n_features);
+
+  cudaFree(X_scaled);
   cudaFree(scale);
   cudaFree(prediction);
   cudaFree(gradient);
