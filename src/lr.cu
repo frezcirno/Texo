@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cuda_runtime.h>
+#include <string>
 
 template <typename T> __device__ T sigmoid(T x) { return 1 / (1 + exp(-x)); }
 
@@ -210,6 +211,77 @@ void hessian_fn(const T1 *X,                       // (n_samples, n_features)
                    dim3(16, 16)>>>(X, prediction, hessian, n_samples,
                                    n_features);
 }
+template <typename T> __device__ inline T warp_max(T val) {
+#pragma unroll
+  for (int off = 16; off > 0; off >>= 1) {
+    val = max(val, __shfl_down_sync(0xffffffff, val, off));
+  }
+  return val;
+}
+
+template <int BLOCK_SIZE, typename T> __device__ inline T block_max(T val) {
+  constexpr int NUM_WARPS = BLOCK_SIZE / 32;
+  __shared__ T warp_maxes[NUM_WARPS];
+  size_t lane = threadIdx.x % 32;
+  size_t warp_idx = threadIdx.x / 32;
+  val = warp_max(val);
+  if (lane == 0) {
+    warp_maxes[warp_idx] = val;
+  }
+  __syncthreads();
+  if (warp_idx == 0) {
+    val = (lane < NUM_WARPS) ? warp_maxes[lane] : -INFINITY;
+    val = warp_max(val);
+  }
+  return val;
+}
+
+template <typename T> __device__ T atomic_max(T *addr, T val);
+
+template <> __device__ float atomic_max<float>(float *addr, float val) {
+  int *addr_as_int = reinterpret_cast<int *>(addr);
+  int old = *addr_as_int;
+  int assumed;
+  do {
+    assumed = old;
+    if (val <= __int_as_float(assumed))
+      break;
+    old = atomicCAS(addr_as_int, assumed, __float_as_int(val));
+  } while (assumed != old);
+  return __int_as_float(old);
+}
+
+template <> __device__ double atomic_max<double>(double *addr, double val) {
+  unsigned long long *addr_as_int =
+      reinterpret_cast<unsigned long long *>(addr);
+  unsigned long long old = *addr_as_int;
+  unsigned long long assumed;
+  do {
+    assumed = old;
+    if (val <= __longlong_as_double(assumed))
+      break;
+    old = atomicCAS(addr_as_int, assumed, __double_as_longlong(val));
+  } while (assumed != old);
+  return __longlong_as_double(old);
+}
+
+template <int BLOCK_SIZE, typename T>
+__global__ void max_abs_kernel(const T *__restrict__ input,
+                               T *__restrict__ output, int N) {
+  int tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
+  int stride = gridDim.x * BLOCK_SIZE;
+
+  T max_res = -INFINITY;
+
+  for (int i = tid; i < N; i += stride) {
+    max_res = max(max_res, abs(input[i]));
+  }
+
+  max_res = block_max<BLOCK_SIZE>(max_res);
+  if (threadIdx.x == 0) {
+    atomic_max(output, max_res);
+  }
+}
 
 // X, y, beta are device pointers
 extern "C" void solve(const float *X, // (n_samples, n_features)
@@ -217,11 +289,15 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
                       float *beta,    // (n_features,)
                       int n_samples, int n_features) {
   constexpr auto lr = 0.01;
+  constexpr auto max_steps = 100000;
+  constexpr auto tolerance = 0.0001;
+  const std::string optimizer = "GD";
 
   double *prediction; // (n_samples,)
   cudaMalloc(&prediction, n_samples * sizeof(*prediction));
   double *gradient; // (n_features,)
-  cudaMalloc(&gradient, n_features * sizeof(*gradient));
+  cudaMalloc(&gradient, (n_features + 1) * sizeof(*gradient));
+  double *max_gradient = gradient + n_features;
   double *hessian; // (n_features, n_features)
   cudaMalloc(&hessian, n_features * n_features * sizeof(*hessian));
   double *L; // (n_features, n_features)
@@ -233,8 +309,7 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
 
   cudaMemset(beta, 0, n_features * sizeof(float));
 
-  // use GD
-  for (int step = 0; step < 100; step++) {
+  for (int step = 0; step < max_steps; step++) {
     // prediction = sigmoid(X @ beta)
     mv_sigmoid_kernel<<<(n_samples + 7) / 8, 256>>>(X, beta, prediction,
                                                     n_samples, n_features);
@@ -242,21 +317,39 @@ extern "C" void solve(const float *X, // (n_samples, n_features)
     // gradient = Xt @ (prediction - y)
     gradient_fn<true>(X, prediction, y, gradient, n_features, 1, n_samples);
 
-    // W = diag(pi * (1 - pi))
-    // hessian = Xt @ W @ X
-    hessian_fn(X, prediction, hessian, n_samples, n_features);
+    // max_gradient = max(gradient)
+    cudaMemset(max_gradient, 0, sizeof(*max_gradient));
+    max_abs_kernel<256>
+        <<<(n_features + 255) / 256, 256>>>(gradient, max_gradient, n_features);
+    double max_gradient_cpu;
+    cudaMemcpy(&max_gradient_cpu, max_gradient, sizeof(max_gradient_cpu),
+               cudaMemcpyDeviceToHost);
+    if (max_gradient_cpu < n_samples * tolerance) {
+      break;
+    }
 
-    // solve: hessian @ delta = gradient
-    // solve: L @ Lt = hessian
-    cholesky_decomposion(hessian, L, n_features);
-    // solve: L @ (Lt @ delta) = gradient
-    triangular_solve_kernel<<<1, 1>>>(hessian, gradient, z, n_features);
-    // solve: Lt @ delta = z
-    triangular_solve_kernel<true><<<1, 1>>>(L, z, delta, n_features);
+    if (optimizer == "Newton") {
+      // W = diag(pi * (1 - pi))
+      // hessian = Xt @ W @ X
+      hessian_fn(X, prediction, hessian, n_samples, n_features);
 
-    // beta -= lr * delta
-    subtract_kernel<<<(n_features + 255) / 256, 256>>>(beta, delta, lr,
-                                                       n_features);
+      // solve: hessian @ delta = gradient
+      // solve: L @ Lt = hessian
+      cholesky_decomposion(hessian, L, n_features);
+      // solve: L @ (Lt @ delta) = gradient
+      triangular_solve_kernel<<<1, 1>>>(L, gradient, z, n_features);
+      // solve: Lt @ delta = z
+      triangular_solve_kernel<true><<<1, 1>>>(L, z, delta, n_features);
+
+      // beta -= lr * delta
+      subtract_kernel<<<(n_features + 255) / 256, 256>>>(beta, delta, lr,
+                                                         n_features);
+    } else {
+      // GD
+      // beta -= lr * delta
+      subtract_kernel<<<(n_features + 255) / 256, 256>>>(
+          beta, gradient, lr / double(n_samples), n_features);
+    }
   }
 
   cudaFree(prediction);

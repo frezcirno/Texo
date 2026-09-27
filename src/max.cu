@@ -1,7 +1,7 @@
 #include <cuda_runtime.h>
 #include <math.h>
 
-__device__ inline float warp_reduce_max(float val) {
+template <typename T> __device__ inline T warp_max(T val) {
 #pragma unroll
   for (int off = 16; off > 0; off >>= 1) {
     val = max(val, __shfl_down_sync(0xffffffff, val, off));
@@ -9,24 +9,26 @@ __device__ inline float warp_reduce_max(float val) {
   return val;
 }
 
-template <int BLOCK_SIZE> __device__ inline float block_reduce_max(float val) {
+template <int BLOCK_SIZE, typename T> __device__ inline T block_max(T val) {
   constexpr int NUM_WARPS = BLOCK_SIZE / 32;
-  __shared__ float warp_maxes[NUM_WARPS];
-  int lane = threadIdx.x % 32;
-  int warp_idx = threadIdx.x / 32;
-  val = warp_reduce_max(val);
+  __shared__ T warp_maxes[NUM_WARPS];
+  size_t lane = threadIdx.x % 32;
+  size_t warp_idx = threadIdx.x / 32;
+  val = warp_max(val);
   if (lane == 0) {
     warp_maxes[warp_idx] = val;
   }
   __syncthreads();
   if (warp_idx == 0) {
     val = (lane < NUM_WARPS) ? warp_maxes[lane] : -INFINITY;
-    val = warp_reduce_max(val);
+    val = warp_max(val);
   }
   return val;
 }
 
-__device__ inline float atomic_max_float(float *addr, float val) {
+template <typename T> __device__ T atomic_max(T *addr, T val);
+
+template <> __device__ float atomic_max<float>(float *addr, float val) {
   int *addr_as_int = reinterpret_cast<int *>(addr);
   int old = *addr_as_int;
   int assumed;
@@ -39,31 +41,36 @@ __device__ inline float atomic_max_float(float *addr, float val) {
   return __int_as_float(old);
 }
 
-template <int BLOCK_SIZE>
-__global__ void _max_v2_kernel(const float *__restrict__ input,
-                              float *__restrict__ output, int N) {
+template <> __device__ double atomic_max<double>(double *addr, double val) {
+  unsigned long long *addr_as_int =
+      reinterpret_cast<unsigned long long *>(addr);
+  unsigned long long old = *addr_as_int;
+  unsigned long long assumed;
+  do {
+    assumed = old;
+    if (val <= __longlong_as_double(assumed))
+      break;
+    old = atomicCAS(addr_as_int, assumed, __double_as_longlong(val));
+  } while (assumed != old);
+  return __longlong_as_double(old);
+}
+
+template <int BLOCK_SIZE, typename T>
+__global__ void max_abs_kernel(const T *__restrict__ input, T *__restrict__ output,
+                           int N) {
   int tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
   int stride = gridDim.x * BLOCK_SIZE;
 
-  float max_res = -INFINITY;
+  T max_res = -INFINITY;
 
-  int N4 = N / 4;
-  const float4 *input4 = reinterpret_cast<const float4 *>(input);
-  for (int i = tid; i < N4; i += stride) {
-    float4 v = input4[i];
-    max_res = max(max_res, v.x);
-    max_res = max(max_res, v.y);
-    max_res = max(max_res, v.z);
-    max_res = max(max_res, v.w);
-  }
-  int tail_base = N4 * 4;
-  if (tail_base + tid < N) {
-    max_res = max(max_res, input[tail_base + tid]);
+  for (int i = tid; i < N; i += stride) {
+    max_res = max(max_res, input[i]);
   }
 
-  max_res = block_reduce_max<BLOCK_SIZE>(max_res);
-  if (threadIdx.x == 0)
-    atomic_max_float(output, max_res);
+  max_res = block_max<BLOCK_SIZE>(max_res);
+  if (threadIdx.x == 0) {
+    atomic_max(output, max_res);
+  }
 }
 
 extern "C" void max_kernel(const float *input, float *output, int N) {
@@ -73,5 +80,5 @@ extern "C" void max_kernel(const float *input, float *output, int N) {
   // Few hundred blocks: enough to fill A800's 108 SMs, few enough to keep
   // atomic contention on the single output negligible.
   constexpr int GRID_SIZE = 432;
-  _max_v2_kernel<BLOCK_SIZE><<<GRID_SIZE, BLOCK_SIZE>>>(input, output, N);
+  max_abs_kernel<BLOCK_SIZE><<<GRID_SIZE, BLOCK_SIZE>>>(input, output, N);
 }
