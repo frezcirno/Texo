@@ -22,7 +22,8 @@ N=50000000 and k=100. The top-k suite compares against a CPU partial sort and re
 the best of two warm wrapper wall times, including allocation and freeing.
 `check-full` also runs an INT8 8192x4096x2048 cancellation regression with an
 analytic reference for every output element, plus Monte Carlo integration with
-10 million and 100 million samples.
+10 million and 100 million samples, matrix-power analytic cases through N=1024,
+and nearest-neighbor cases with 10,000/100,000 points.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -151,7 +152,74 @@ zero memory/synchronization errors or race hazards, but the target correctly
 returns failure for the numerical errors. Both sm_80 and sm_75 compile; only
 sm_80 was run on hardware.
 
-`sanitize` runs memory checks on GEMM, batched and INT8 matrix multiplication, blur,
+The 80-case `mat_pow_test` quick suite covers the two
+[Matrix Power examples](https://leetgpu.com/challenges/matrix-power), every
+exponent from 1 through 20, dimensions around 16/32 boundaries, scalar inputs,
+identity/zero/diagonal matrices, permutation cycles, nilpotent shifts, a nonzero
+last row/column, magnitude growth, and independently unaligned input/output
+pointers. P=0 and negative powers are excluded by the challenge's P>=1 constraint.
+General small cases use P sequential CPU double matrix products instead of the
+CUDA recursion. Local quick-suite tolerances are atol=1e-5 and rtol=1e-4, with exact checks
+for selected integer/structural cases and bitwise copies for P=1. Test matrices
+keep intermediate powers finite; this does not promise numerical agreement for
+every ill-conditioned matrix in the input range.
+
+Every case runs twice using the same allocations, with NaN/finite output poison,
+output guards, unpadded input tails and input-preservation checks. The second
+input is the negated transpose, whose expected power follows independently from
+`(-A^T)^P = (-1)^P (A^P)^T`. Run `make run-mat-pow` for the quick suite, also in
+`make check`. `make run-mat-pow MAT_POW_ARGS=--large` runs five separate dense analytic
+cases at N=511/512/1023/1024, including P=20; these also run in `make check-full`.
+They use `A = I + u*v^T` and its closed-form power to validate all output entries
+without a cubic CPU calculation. The large suite uses atol=1e-5 and rtol=1e-3
+to allow accumulated rounding from long FP32 dot products and repeated powers;
+these are local tolerances, not an assertion about hidden platform tolerances.
+The analytic oracle is cross-checked against
+the CPU products on a small case. These are correctness checks, not timings.
+`make sanitize-mat-pow` runs the quick suite under memcheck with full leak checks
+and initcheck; it is also part of `make sanitize`.
+
+Validated on 2026-09-27 with NVIDIA A800 80GB PCIe and `-arch=sm_80`: all 80
+quick cases and five large cases pass. Memcheck reports zero errors and zero
+leaked allocations; initcheck reports zero errors. Both sm_80 and sm_75 builds
+pass, with no physical T4 run or online submission implied. In the N=1024, P=20
+analytic case, the maximum absolute difference from FP64 is about 2.75e-4;
+the large-suite tolerance above accounts for this FP32 rounding difference.
+
+The 39-case `nn_test` quick suite validates the [Nearest Neighbor](https://leetgpu.com/challenges/nearest-neighbor)
+contract using an exhaustive CPU double squared-distance search for small
+cases. Every returned index must be in range, exclude the query point itself,
+and reach the minimum distance; any equally near point is accepted because the
+statement does not specify tie-breaking. Integer and dyadic inputs avoid
+ambiguous near-tie rounding, so comparisons are exact. The example, individual
+coordinate axes, Euclidean versus Manhattan distance, coordinate extremes,
+close distinct points, duplicate points, ties, last-point candidates,
+warp/block boundaries and unaligned buffers are covered. The statement permits
+N=1 but specifies no output when there is no other point; `singleton-storage`
+checks input preservation and output guards without inventing an expected index.
+
+Each case runs twice with the same allocations and negative output poison.
+The second call rotates point order and applies a coordinate isometry, checking
+index changes as well as unchanged input bytes and output guards. Input tails
+are unpadded so memcheck can detect inactive threads reading beyond N. Run
+`make run-nn` (also in `make check`); use `NN_ARGS="--case boundary-256"` to
+isolate a case or `NN_ARGS=--list-cases` to list names without initializing CUDA.
+`make run-nn NN_ARGS=--large` runs two separate 10,000/100,000-point paired-grid
+cases, also in `make check-full`. Each pair is 1/8 apart and other pairs are
+at least 31/8 apart, providing an O(N) analytic reference. A small paired-grid
+case is checked with exhaustive CPU search. These are correctness checks, not
+performance measurements. `make sanitize-nn` runs memcheck with leak checking
+and initcheck, accepts `NN_ARGS`, and is included in `make sanitize`.
+
+Revalidated on 2026-09-27 on A800 after correcting candidate indexing and adding
+the thread-bound check: all 39 quick cases and both 10,000/100,000-point cases
+pass. Memcheck reports zero errors and zero leaked allocations; initcheck reports
+zero errors. N=1 returns -1 in the current implementation, while the test still
+checks only storage safety because the challenge does not specify a sentinel.
+Both sm_80 and sm_75 compile; only sm_80 was run on hardware. No physical T4 run
+or online submission is implied by these local checks.
+
+`sanitize` runs memory checks on nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

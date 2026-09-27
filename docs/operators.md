@@ -41,6 +41,23 @@ before consuming outputs on the CPU.
 - `mat_add.cu`: elementwise addition of two float `[N,N]` matrices.
 - `mat_copy.cu`: copy a float `[N,N]` matrix. N is the side length, not the
   element count. Both square-matrix examples require positive N and N*N fitting int.
+- `mat_pow.cu`: matrix power `output = input^P`, with separate contiguous FP32
+  `[N,N]` input/output in row-major order. The
+  [LeetGPU contract](https://leetgpu.com/challenges/matrix-power) specifies
+  `1 <= N <= 1024`, `1 <= P <= 20`, and input elements in `[-10,10]`.
+  P=1 copies the input; P=0, negative powers and aliasing are outside the tested
+  contract. `make run-mat-pow` uses independent CPU double and analytic
+  references, output guards, changed-input repeated calls and input preservation.
+  `MAT_POW_ARGS=--large` selects dense analytic cases through N=1024 and P=20.
+- `nn.cu`: nearest neighbor for FP32 `points[N,3]`, writing one INT32 index per
+  point to separate `indices[N]` storage. The
+  [LeetGPU contract](https://leetgpu.com/challenges/nearest-neighbor) requires a
+  closest point other than the query itself, using Euclidean distance;
+  squared distances give the same ordering. N is in [1,100000], with coordinates
+  in [-1000,1000]. The statement does not specify tie-breaking, so tests accept
+  any non-self index at the minimum distance. N=1 has no such index and no
+  documented sentinel: its test checks storage safety only. Run `make run-nn`,
+  or select individual/large cases via `NN_ARGS`; see [testing notes](testing.md).
 - `mv.cu`: `A[M,N] * x[N] -> y[M]`, float. `solve` uses a 256-thread block per
   row when N is at least 1024 (M <= 64), 2048 (65 <= M <= 1024), or 4096
   (M > 1024); otherwise it uses one warp per row, eight rows per block.
