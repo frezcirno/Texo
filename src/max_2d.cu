@@ -56,29 +56,24 @@ template <> __device__ double atomic_max<double>(double *addr, double val) {
 }
 
 template <int BLOCK_SIZE, typename T>
-__global__ void max_kernel(const T *__restrict__ input, T *__restrict__ output,
-                           int N) {
-  int tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
-  int stride = gridDim.x * BLOCK_SIZE;
-
+__global__ void max_2d_kernel(const T *__restrict__ input, // (M, N)
+                              T *__restrict__ output,      // (N,)
+                              int M, int N) {
+  const size_t col = blockIdx.x;
   T max_res = -INFINITY;
 
-  for (int i = tid; i < N; i += stride) {
-    max_res = max(max_res, input[i]);
+  for (int i = threadIdx.x; i < M; i += BLOCK_SIZE) {
+    max_res = max(max_res, input[i * N + col]);
   }
 
   max_res = block_max<BLOCK_SIZE>(max_res);
   if (threadIdx.x == 0) {
-    atomic_max(output, max_res);
+    output[col] = max_res;
   }
 }
 
-extern "C" void solve(const float *input, float *output, int N) {
-  const float neg_inf = -INFINITY;
-  cudaMemcpy(output, &neg_inf, sizeof(float), cudaMemcpyHostToDevice);
-  constexpr int BLOCK_SIZE = 256;
-  // Few hundred blocks: enough to fill A800's 108 SMs, few enough to keep
-  // atomic contention on the single output negligible.
-  constexpr int GRID_SIZE = 432;
-  max_kernel<BLOCK_SIZE><<<GRID_SIZE, BLOCK_SIZE>>>(input, output, N);
+extern "C" void solve(const float *input, // (M, N)
+                      float *output,      // (N,)
+                      int M, int N) {
+  max_2d_kernel<256><<<N, 256>>>(input, output, M, N);
 }
