@@ -128,6 +128,14 @@ before consuming outputs on the CPU.
   FP32 arithmetic finite. M/N must be positive, K nonnegative, and storage must
   not overlap between inputs and output. K=0 fills C with zero_point_C without
   reading A/B. See `make run-mm-int8` for exact CPU-reference checks.
+- `mc_int.cu`: Monte Carlo integration from supplied FP32 function values
+  `y_samples[n_samples]`: the intended result is
+  `sum(y_samples) * (b-a) / n_samples`, written to one FP32 output element.
+  Tests use positive sample counts, finite values and `a < b`, with separate
+  input/output storage and cudaMalloc-aligned inputs. They check the estimate
+  against CPU double arithmetic, output overwrites/repeated calls, and input
+  preservation. Run `make run-mc-int`; add `MC_INT_ARGS=--large` for the separate
+  10-million/100-million-sample suite. See [testing notes](testing.md).
 - `lr.cu`: binary logistic regression with contiguous FP32 X[samples,features],
   y[samples] in {0,1}, and overwritten beta[features]. Samples/features must be
   positive, X finite, and inputs/output must not overlap. No intercept is added;

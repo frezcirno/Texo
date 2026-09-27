@@ -21,7 +21,8 @@ rounding error seen with repeated float atomic additions, plus top-k selection w
 N=50000000 and k=100. The top-k suite compares against a CPU partial sort and reports
 the best of two warm wrapper wall times, including allocation and freeing.
 `check-full` also runs an INT8 8192x4096x2048 cancellation regression with an
-analytic reference for every output element.
+analytic reference for every output element, plus Monte Carlo integration with
+10 million and 100 million samples.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -122,8 +123,36 @@ regression, and the complete `make check-full` passed. Memcheck passed all 56
 default cases with zero errors. The `sm_75` (T4) build also passed; no physical
 T4 runtime or online resubmission is claimed by these local checks.
 
+`mc_int_test` checks `sum(y_samples) * (b-a) / n_samples` against CPU double
+arithmetic with local tolerances atol=1e-2 and rtol=1e-2. The reference uses the
+supplied samples, not an analytic integral or newly generated random points.
+The 49-case quick suite covers scalar/vector/warp/block boundaries, individual scalar
+tail positions, constants, zeros, positive/negative/narrow intervals, a
+million-element tail, and cancellation with a small nonzero residual. Most
+numerical cases clear the output; separate cases poison it or make consecutive
+calls without clearing it, requiring overwrite semantics. Each case also changes
+input signs on its last call, checks input preservation and output guards, and
+leaves input tails unpadded for memcheck. Inputs are cudaMalloc-aligned; empty
+inputs, nonfinite samples and invalid intervals are outside this test contract.
+
+Run `make run-mc-int` for the quick suite (also in `make check`), or
+`make run-mc-int MC_INT_ARGS=--large` for the separate 10-million/100-million
+constant-input regressions (also in `make check-full`). These are correctness
+checks, not performance benchmarks. `make sanitize-mc-int` runs the quick suite
+under memcheck, initcheck, racecheck and synccheck, propagating both functional
+failures and sanitizer errors; it is also included in `make sanitize`.
+
+Initial validation on 2026-09-27 with NVIDIA A800 80GB PCIe: the unchanged
+operator passes 43/49 quick cases and both large cases. Two cancellation cases
+return zero instead of approximately +/-0.05 because the four FP32 values are
+added before conversion to double. Four overwrite/reuse cases fail because
+atomic additions retain the previous output. All four sanitizer tools report
+zero memory/synchronization errors or race hazards, but the target correctly
+returns failure for the numerical errors. Both sm_80 and sm_75 compile; only
+sm_80 was run on hardware.
+
 `sanitize` runs memory checks on GEMM, batched and INT8 matrix multiplication, blur,
-categorical cross entropy, MSE, top-k, interleave and sigmoid,
+categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.
 
