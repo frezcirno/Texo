@@ -15,7 +15,7 @@ __global__ void batched_mm(const half *__restrict__ A, // (BATCH, M, K)
     sum +=
         float(A[cz * M * K + cy * K + i]) * float(B[cz * K * N + i * N + cx]);
   }
-  C[cz * M * N + cy * N + cx] += sum;
+  C[cz * M * N + cy * N + cx] = sum;
 }
 
 // A, B, and C are device pointers

@@ -31,7 +31,8 @@ elements, 3D counts at 500^3/1000^3, subarray sums over 100M-element arrays,
 RMS normalization with N=99999/100000, group normalization at
 N/C/H/W/G=8/512/64/64/32 and 2/32/128/128/8, and layer normalization at
 N/C=65536/512 and 1024/4096. Maximum fixed-length window sums also run at
-N=50000 with window_size=1/257/49999/50000.
+N=50000 with window_size=1/257/49999/50000. FP16 batched multiplication adds
+B/M/N/K=1/1024/1024/1024, 3/1023/1023/1023 and 128/256/256/256.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -80,6 +81,64 @@ memcheck in `make sanitize`.
 Validated on 2026-09-25 with NVIDIA A800 80GB PCIe, CUDA Toolkit 12.6.20,
 `-O3 -std=c++14 -arch=sm_80`: all 44 cases, the full `make check`, and the
 batched-MM memcheck run passed (zero reported errors).
+
+`batched_mm_fp16_test` follows the [FP16 challenge](https://leetgpu.com/challenges/fp16-batched-matrix-multiplication):
+`C = A*B`, FP32 accumulation and FP16 output, with BATCH=1..128 and M/N/K=1..1024.
+Its 51 quick cases cover the published example, rectangular/singleton matrices,
+independently partial batch/row/column blocks, K=1/257/1023/1024, BATCH=127/128,
+identity/zero matrices, batch-specific data, an active final batch, a nonzero
+last reduction element, negative products, and separate/combined half-element
+pointer offsets. Each case checks every output, both output guards and unchanged
+input bytes; input allocations have no suffix padding. Every case runs twice,
+negating A on the final call. Two additional-call regressions retain C across
+three calls. Four overwrite regressions start C with nonzero finite values,
+NaN or infinity. These output poisons are not special-value input tests.
+
+References accumulate the actual quantized FP16 inputs in CPU double and round
+once to FP16 with round-to-nearest-even. Binary cases have exact FP32 products
+and partial sums, so they require exact numerical equality after rounding.
+Directed tests pin known answers for small increments that an FP16 accumulator
+would lose, cancellation of products/sums outside FP16's range, both signs of
+halfway rounding, and FP16 subnormal outputs. Three random decimal cases use
+atol=2e-4 plus rtol=1e-3 against the rounded reference to allow FP32 reduction
+order differences. All expected and actual results must be finite; signed zeros
+compare numerically. Empty dimensions, overlapping buffers and nonfinite A/B
+are not part of this suite.
+
+The three `--large` cases use separable binary inputs and analytic references
+for every output, avoiding a CPU cubic multiplication. The 128/256/256/256 case
+uses the challenge's performance dimensions at its maximum batch size; this is
+a correctness run, not a timing benchmark. Large cases clear C before each call,
+while the dedicated quick cases check overwrite/reuse semantics.
+
+```bash
+CUDA_VISIBLE_DEVICES=3 make run-batched-mm-fp16
+CUDA_VISIBLE_DEVICES=3 make run-batched-mm-fp16 BATCHED_MM_FP16_ARGS=--large
+CUDA_VISIBLE_DEVICES=3 make run-batched-mm-fp16 BATCHED_MM_FP16_ARGS="--case overwrite-finite"
+make run-batched-mm-fp16 BATCHED_MM_FP16_ARGS=--list-cases
+CUDA_VISIBLE_DEVICES=3 make sanitize-batched-mm-fp16
+```
+
+The quick suite participates in `make check`, the large suite in `make check-full`,
+and memcheck (including leak checking), initcheck, racecheck and synccheck in
+`make sanitize`. The dedicated sanitizer target accepts `BATCHED_MM_FP16_ARGS`,
+runs all four tools even on functional failures, and returns nonzero for either
+incorrect outputs or sanitizer errors. `--case` also works with `--large`;
+listing cases does not initialize CUDA.
+
+Validated on 2026-09-28 with NVIDIA A800 80GB PCIe (GPU 3), CUDA 12.6,
+`-O3 -std=c++14 -arch=sm_80`: 45/51 quick cases and 3/3 large cases passed.
+The six failures are `overwrite-finite`, `overwrite-zero-product`,
+`overwrite-nan`, `overwrite-infinity`, `consecutive-calls` and
+`consecutive-blocks`: the source adds to old C instead of overwriting it.
+For example, zero A with initial C=8 incorrectly keeps 8 instead of producing 0.
+Memcheck, initcheck and synccheck reported zero errors; racecheck reported zero
+hazards, and leak checking found zero leaked allocations. Each tool ran all 51
+quick cases and reproduced the same six functional failures, so the sanitizer
+target correctly exits nonzero. The large suite was run without instrumentation.
+Both sm_80 and sm_75 builds passed; no physical T4 run or online submission was
+performed. The operator source was not modified while adding these tests.
+Logs: `build/sm_80/batched_mm_fp16-{quick,large,sanitize}.log`.
 
 `mm_int8_test` has 56 default cases covering rectangular matrices, independent
 16x16 block boundaries, K=1/257/1025/2048, full signed INT8 inputs, independent input/output
@@ -736,7 +795,7 @@ This verification preserves the failing regressions and does not change the
 operator implementation. Runtime/build logs are in
 `build/sm_80/max_subarray_sum-{build,quick,large,sanitize}.log`.
 
-`sanitize` runs memory checks on maximum fixed-length window sums, layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
+`sanitize` runs memory checks on maximum fixed-length window sums, layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, FP32/FP16 batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on subarray sums, counting, the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

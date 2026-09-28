@@ -256,6 +256,14 @@ before consuming outputs on the CPU.
   no-op; K=0 does not read A/B and preserves finite C numerically. Dimensions
   are nonnegative and flattened offsets must fit int; input/output storage must
   not overlap.
+- `batched_mm_fp16.cu`: the [FP16 batched matrix multiplication challenge](https://leetgpu.com/challenges/fp16-batched-matrix-multiplication)
+  uses contiguous row-major half A[BATCH,M,K], B[BATCH,K,N] and C[BATCH,M,N].
+  Its contract is `C = A*B`, with FP32 accumulation and a final FP16 conversion;
+  the previous contents of C must not contribute. BATCH is 1..128 and M/N/K
+  are 1..1024. The current source uses `C += sum`, so output-overwrite and
+  repeated-call checks are expected to fail. `make run-batched-mm-fp16` checks
+  the challenge contract with CPU references, FP16 rounding/FP32 accumulation
+  regressions, batch isolation, pointer offsets and output guards.
 - `mm_int8.cu`: contiguous row-major signed INT8 A[M,K], B[K,N] and C[M,N].
   Subtract the input zero points and accumulate products in INT64. Convert the
   completed dot product to FP32, multiply by scale_A then scale_B, and divide by
