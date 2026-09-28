@@ -521,20 +521,20 @@ listing does not allocate the arrays. These are correctness checks, not timings.
 accepts `SLICE_SUM3D_ARGS`, and participates in `make sanitize`. Functional
 failures and sanitizer findings cause nonzero exit status.
 
-Initial validation on 2026-09-28 on A800 GPU 3: the quick suite reports 22/87
-passing under memcheck with `--destroy-on-device-error kernel`, which allows
-later cases to run after terminating faulting kernels. Memcheck detects
-out-of-bounds reads; the row coordinate currently keeps increasing across
-depths instead of returning to the first selected row. An isolated normal
-`example-1` run returns 9 instead of 7. Separately, `consecutive-calls` returns
-7 then 14 instead of 7 then 7, confirming that output is not reset.
+Validation on 2026-09-28 on A800 GPU 3 after the row-index fix: the quick
+suite reports 83/87 passing, and both 500^3 large cases pass. The row
+coordinate now wraps within each depth using `(i / size.x) % size.y`.
+The remaining failures are `overwrite-singleton`, `overwrite-interior`,
+`consecutive-calls` and `consecutive-blocks`: `solve` does not clear output
+before `atomicAdd`. For example, the singleton sum 7 returns 24 when output
+starts at 17, and repeated calls return 7 then 14 instead of 7 then 7.
 
-The single-depth `example-2` passes all four tools through the Makefile
-sanitizer target with zero reported errors/hazards; this is not a full-suite
-sanitizer pass. The two large cases are registered but were not run pending
-the indexing/memory-safety fix. Both sm_80 and sm_75 compile; only sm_80 was
-run on hardware. The operator was left unchanged while adding tests. Logs are
-in `build/sm_80/slice_sum3d-{memcheck,example-1,consecutive-calls,sanitize-example2}.log`.
+The full quick suite runs under all four sanitizer tools: memcheck, initcheck
+and synccheck report zero errors, and racecheck reports zero hazards. The
+sanitizer target still returns failure for the four incorrect results. Both
+sm_80 and sm_75 compile; only sm_80 was run on hardware. This verification
+did not change the operator implementation. Current logs are in
+`build/sm_80/slice_sum3d-{quick,large,sanitize}.log`.
 
 `sanitize` runs memory checks on 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
