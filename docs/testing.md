@@ -290,23 +290,15 @@ correctness checks, not performance measurements. `make sanitize-max-pooling-2d`
 runs memcheck with leak checking and initcheck, accepts `POOL_ARGS`, and is
 included in `make sanitize`; functional or sanitizer failures return nonzero.
 
-Initial validation on 2026-09-28 on A800 GPU 3: both sm_80 and sm_75 builds
-pass; only sm_80 was run on hardware. With the operator left unchanged, the
-quick suite reports 5/64 passing under memcheck with
-`--destroy-on-device-error kernel` (faulting kernels are terminated so later
-cases can still run). Memcheck detects out-of-bounds writes in `floor-tail`
-and a separate `kernel-6` run confirms out-of-bounds reads. The passing
-`identity-rectangular` case also passes the Makefile sanitizer target with zero
-memcheck/initcheck errors and zero leaked allocations.
-
-Three isolated normal runs confirm functional failures without invalid memory
-accesses: `example-1` returns 4 instead of 5 at the first output, `downsample-2x2`
-leaves outputs unwritten, and `all-negative-p1` returns 0 instead of -0.125 at
-the first output. The implementation uses output H/W for input addressing,
-computes dimensions as `H+2*p-s*k+1` instead of `floor((H+2*p-k)/s)+1`, and
-uses zero padding. The two large cases are registered but were not run pending
-these memory-safety fixes. Full-suite initcheck and an online submission are
-not claimed. Diagnostic logs are in `build/sm_80/max_pooling_2d-*.log`.
+Validated on 2026-09-28 on A800 GPU 3 after correcting output dimensions,
+thread bounds, padding and input addressing: all 64 quick cases and both
+large cases pass. The quick suite also passes the Makefile sanitizer target:
+memcheck and initcheck each report zero errors, with zero leaked allocations.
+Input reads now use the original H/W, while output writes use the pooled
+dimensions. Both sm_80 and sm_75 builds pass; only sm_80 was run on hardware.
+The large cases were run for correctness, without sanitizer instrumentation.
+No physical T4 run or online submission is implied. Logs for this revision
+are in `build/sm_80/max_pooling_2d-validated-*.log`.
 
 The 58-case `count_test` quick suite checks the
 [Count Array Element](https://leetgpu.com/challenges/count-array-element)
