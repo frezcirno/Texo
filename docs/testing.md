@@ -32,7 +32,8 @@ RMS normalization with N=99999/100000, group normalization at
 N/C/H/W/G=8/512/64/64/32 and 2/32/128/128/8, and layer normalization at
 N/C=65536/512 and 1024/4096. Maximum fixed-length window sums also run at
 N=50000 with window_size=1/257/49999/50000. FP16 batched multiplication adds
-B/M/N/K=1/1024/1024/1024, 3/1023/1023/1023 and 128/256/256/256.
+B/M/N/K=1/1024/1024/1024, 3/1023/1023/1023 and 128/256/256/256. ALiBi adds
+M/N/d=2048/2048/1024, 2047/2048/33 and 2048/2047/65.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -127,18 +128,76 @@ incorrect outputs or sanitizer errors. `--case` also works with `--large`;
 listing cases does not initialize CUDA.
 
 Validated on 2026-09-28 with NVIDIA A800 80GB PCIe (GPU 3), CUDA 12.6,
-`-O3 -std=c++14 -arch=sm_80`: 45/51 quick cases and 3/3 large cases passed.
-The six failures are `overwrite-finite`, `overwrite-zero-product`,
-`overwrite-nan`, `overwrite-infinity`, `consecutive-calls` and
-`consecutive-blocks`: the source adds to old C instead of overwriting it.
-For example, zero A with initial C=8 incorrectly keeps 8 instead of producing 0.
+`-O3 -std=c++14 -arch=sm_80`: 51/51 quick cases and 3/3 large cases passed
+after replacing `C += sum` with `C = sum`. The previous six output-overwrite
+and consecutive-call failures now pass, including nonzero/NaN/infinite C.
 Memcheck, initcheck and synccheck reported zero errors; racecheck reported zero
 hazards, and leak checking found zero leaked allocations. Each tool ran all 51
-quick cases and reproduced the same six functional failures, so the sanitizer
-target correctly exits nonzero. The large suite was run without instrumentation.
+quick cases successfully, and the sanitizer target returned zero. The large
+suite was run without instrumentation.
 Both sm_80 and sm_75 builds passed; no physical T4 run or online submission was
-performed. The operator source was not modified while adding these tests.
+performed.
 Logs: `build/sm_80/batched_mm_fp16-{quick,large,sanitize}.log`.
+
+`alibi_test` follows the [ALiBi challenge](https://leetgpu.com/challenges/attention-with-linear-biases):
+`output = softmax(Q*K^T/sqrt(d) + alpha*(i-j)) * V`, with row-wise softmax,
+FP32 inputs/output, M/N=1..2048, d=1..1024 and alpha in [-1,1]. Its 64 quick
+cases cover both example inputs, singleton and rectangular matrices, independent
+16-thread tile boundaries, warp/256-thread reduction boundaries and tails,
+maximum dimensions on each axis, positive/negative/fractional/zero alpha,
+zero Q/K/V, constant V, identical query rows, an active final feature/key,
+identity V to expose attention weights, and separate/combined float-element
+pointer offsets. Four zero-logit cases with d=1/4/16/1024 pin the same bias-only
+result to catch incorrectly scaling the bias by sqrt(d).
+
+The CPU reference computes dots, complete biased scores, stable row softmax
+and the weighted V sum in FP64. Results must be finite and satisfy
+atol=1e-5 plus rtol=1e-5; zero V requires exact numerical zero. Known answers
+independently pin the examples and two-key bias-only probabilities. The printed
+first row of example 1 is inconsistent with its formula in the final two
+columns: the formula gives approximately `[3.04685,4.04685,5.04685,6.04685]`.
+Tests use that formula, not the erroneous printed values.
+
+Every case runs twice on the same input/output allocations, changing Q and V
+on the second call. Output starts at a nonzero value, then NaN, to check complete
+overwrites. Three cases instead retain output across three calls and change K
+and the sign of alpha on the final call. All calls check every output, prefix
+and suffix guards, and bitwise preservation of Q/K/V. Input allocations have
+no suffix padding, so memcheck can detect tail overreads.
+
+Three `--large` cases use separable Q/K/V with nonconstant outputs and analytic
+dot/value sums to avoid cubic CPU reference work. A small separable case checks
+that shortcut against the full FP64 reference on all three calls. The large
+cases exercise maximum M/N/d together plus independent M/N tails. They are
+correctness checks without performance timing. As agreed in the earlier review,
+exponent overflow/underflow regressions remain deferred: alpha endpoints are
+tested on small shapes, while full-dimension cases use alpha=0 or +/-1/4096 and
+bounded scores. Passing this suite does not resolve that known stability
+limitation. Empty sizes, input/output aliasing and nonfinite inputs are also
+outside the test scope.
+
+```bash
+CUDA_VISIBLE_DEVICES=3 make run-alibi
+CUDA_VISIBLE_DEVICES=3 make run-alibi ALIBI_ARGS=--large
+CUDA_VISIBLE_DEVICES=3 make run-alibi ALIBI_ARGS="--case bias-independent-d4"
+make run-alibi ALIBI_ARGS=--list-cases
+CUDA_VISIBLE_DEVICES=3 make sanitize-alibi
+```
+
+The quick suite runs in `make check`, the large suite in `make check-full`, and
+`make sanitize-alibi` participates in `make sanitize`. The dedicated sanitizer
+target runs memcheck with leak checking, initcheck, racecheck and synccheck,
+accepts `ALIBI_ARGS` and propagates both functional and sanitizer failures.
+`--case` combines with `--large`; `--list-cases` does not initialize CUDA.
+
+Validated on 2026-09-28 with NVIDIA A800 80GB PCIe (GPU 3), CUDA 12.6,
+`-O3 -std=c++14 -arch=sm_80`: all 64 quick cases and all three large cases
+passed. All four sanitizer tools ran the complete quick suite successfully:
+memcheck/initcheck/synccheck reported zero errors, racecheck reported zero
+hazards, and leak checking found zero leaked allocations. Large cases ran
+without sanitizer instrumentation. Both sm_80 and sm_75 builds passed; no
+physical T4 run or online submission was performed. Logs are in
+`build/sm_80/alibi-{build,quick,large,sanitize}.log`.
 
 `mm_int8_test` has 56 default cases covering rectangular matrices, independent
 16x16 block boundaries, K=1/257/1025/2048, full signed INT8 inputs, independent input/output
@@ -795,7 +854,7 @@ This verification preserves the failing regressions and does not change the
 operator implementation. Runtime/build logs are in
 `build/sm_80/max_subarray_sum-{build,quick,large,sanitize}.log`.
 
-`sanitize` runs memory checks on maximum fixed-length window sums, layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, FP32/FP16 batched and INT8 matrix multiplication, blur,
+`sanitize` runs memory checks on ALiBi, maximum fixed-length window sums, layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, FP32/FP16 batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on subarray sums, counting, the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

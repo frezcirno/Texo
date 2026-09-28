@@ -11,7 +11,7 @@ TEST_DIR := tests
 PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
             conv3d_bench mv_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test geglu_test
-BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test batched_mm_fp16_test mm_int8_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test rms_norm_test group_norm_test layer_norm_test max_pooling_2d_test count_test count3d_test slice_sum_test slice_sum2d_test slice_sum3d_test max_subarray_sum_test
+BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test batched_mm_fp16_test alibi_test mm_int8_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test rms_norm_test group_norm_test layer_norm_test max_pooling_2d_test count_test count3d_test slice_sum_test slice_sum2d_test slice_sum3d_test max_subarray_sum_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS) lr_newton_test
 GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_wmma_tiled_bench \
                 gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_aligned_bench \
@@ -27,6 +27,7 @@ GEMM_SCHEDULE_TESTS := $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_fixed_test \
                        $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_dynamic_test
 GEMM_ARGS ?= 1024 1024 1024 100
 BATCHED_MM_FP16_ARGS ?=
+ALIBI_ARGS ?=
 MM_INT8_ARGS ?=
 MC_INT_ARGS ?=
 MAT_POW_ARGS ?=
@@ -79,6 +80,7 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
         run-sigmoid run-geglu run-rgb2grayscale run-batched-mm run-mm-int8 run-lr run-mc-int \
         run-batched-mm-fp16 sanitize-batched-mm-fp16 \
+        run-alibi sanitize-alibi \
         sanitize-mc-int run-mat-pow sanitize-mat-pow run-nn sanitize-nn \
         run-batch-norm sanitize-batch-norm \
         run-rms-norm sanitize-rms-norm \
@@ -364,6 +366,8 @@ run-batched-mm: $(BIN_DIR)/batched_mm_test
 	$<
 run-batched-mm-fp16: $(BIN_DIR)/batched_mm_fp16_test
 	$< $(BATCHED_MM_FP16_ARGS)
+run-alibi: $(BIN_DIR)/alibi_test
+	$< $(ALIBI_ARGS)
 run-mm-int8: $(BIN_DIR)/mm_int8_test
 	$< $(MM_INT8_ARGS)
 run-lr: $(BIN_DIR)/lr_test $(BIN_DIR)/lr_newton_test
@@ -443,6 +447,7 @@ check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/rgb2grayscale_test
 	$(BIN_DIR)/batched_mm_test
 	$(BIN_DIR)/batched_mm_fp16_test
+	$(BIN_DIR)/alibi_test
 	$(BIN_DIR)/mm_int8_test
 	$(BIN_DIR)/lr_test
 	$(BIN_DIR)/lr_newton_test
@@ -469,6 +474,7 @@ check-full: check
 	$(BIN_DIR)/mse_test
 	$(BIN_DIR)/top_k_test 50000000 100
 	$(BIN_DIR)/batched_mm_fp16_test --large
+	$(BIN_DIR)/alibi_test --large
 	$(BIN_DIR)/mm_int8_test --large
 	$(BIN_DIR)/mc_int_test --large
 	$(BIN_DIR)/mat_pow_test --large
@@ -486,6 +492,12 @@ check-full: check
 	$(BIN_DIR)/max_subarray_sum_test --large
 
 COMPUTE_SANITIZER ?= compute-sanitizer
+sanitize-alibi: $(BIN_DIR)/alibi_test
+	@alibi_status=0; \
+	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --print-limit 20 --error-exitcode 1 $< $(ALIBI_ARGS) || alibi_status=1; \
+	for tool in initcheck racecheck synccheck; do \
+	  $(COMPUTE_SANITIZER) --tool $$tool --print-limit 20 --error-exitcode 1 $< $(ALIBI_ARGS) || alibi_status=1; \
+	done; exit $$alibi_status
 sanitize-batched-mm-fp16: $(BIN_DIR)/batched_mm_fp16_test
 	@fp16_status=0; \
 	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --print-limit 20 --error-exitcode 1 $< $(BATCHED_MM_FP16_ARGS) || fp16_status=1; \
@@ -604,6 +616,7 @@ sanitize: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/sigmoid_test
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/batched_mm_test
 	$(MAKE) sanitize-batched-mm-fp16
+	$(MAKE) sanitize-alibi
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/mm_int8_test
 	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --error-exitcode 1 $(BIN_DIR)/lr_test
 	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --error-exitcode 1 $(BIN_DIR)/lr_newton_test
@@ -633,12 +646,15 @@ help:
 	@echo 'all             Build tests and benchmarks (no GPU needed)'
 	@echo 'compile-kernels Compile every src/*.cu independently'
 	@echo 'check           Run small GPU correctness checks'
-	@echo 'check-full      Also run large MSE, top-k, FP16 batched/INT8 matmul, Monte Carlo, matrix power, nearest-neighbor, batch-norm, RMS-norm, group-norm, layer-norm, max-pooling, count, subarray-sum and max-subarray-sum regressions'
+	@echo 'check-full      Also run large MSE, top-k, FP16 batched/INT8 matmul, ALiBi, Monte Carlo, matrix power, nearest-neighbor, batch-norm, RMS-norm, group-norm, layer-norm, max-pooling, count, subarray-sum and max-subarray-sum regressions'
 	@echo 'sanitize        Run selected memory/synchronization checks'
 	@echo 'run-<operator>  Run one test/benchmark with default arguments'
 	@echo 'run-batched-mm-fp16 Check FP16 batched MM; BATCHED_MM_FP16_ARGS="--case NAME" isolates a case'
 	@echo '               --large checks 1024 dimensions and B=128,M=N=K=256; --list-cases lists cases'
 	@echo 'sanitize-batched-mm-fp16 Run memcheck/initcheck/racecheck/synccheck; accepts BATCHED_MM_FP16_ARGS'
+	@echo 'run-alibi      Check ALiBi; ALIBI_ARGS="--case NAME" isolates a case'
+	@echo '               --large checks M/N up to 2048,d up to 1024; --list-cases lists cases'
+	@echo 'sanitize-alibi Run ALiBi memcheck/leak/initcheck/racecheck/synccheck; accepts ALIBI_ARGS'
 	@echo 'run-mm-int8     Check INT8 quantization; MM_INT8_ARGS=--large checks 8192x4096x2048'
 	@echo 'run-mc-int      Check Monte Carlo integration; MC_INT_ARGS=--large checks 10M/100M samples'
 	@echo 'sanitize-mc-int Run Monte Carlo memcheck/initcheck/racecheck/synccheck checks'

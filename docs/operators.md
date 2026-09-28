@@ -260,8 +260,8 @@ before consuming outputs on the CPU.
   uses contiguous row-major half A[BATCH,M,K], B[BATCH,K,N] and C[BATCH,M,N].
   Its contract is `C = A*B`, with FP32 accumulation and a final FP16 conversion;
   the previous contents of C must not contribute. BATCH is 1..128 and M/N/K
-  are 1..1024. The current source uses `C += sum`, so output-overwrite and
-  repeated-call checks are expected to fail. `make run-batched-mm-fp16` checks
+  are 1..1024. The source overwrites C with the converted FP32 sum.
+  `make run-batched-mm-fp16` checks
   the challenge contract with CPU references, FP16 rounding/FP32 accumulation
   regressions, batch isolation, pointer offsets and output guards.
 - `mm_int8.cu`: contiguous row-major signed INT8 A[M,K], B[K,N] and C[M,N].
@@ -306,6 +306,16 @@ before consuming outputs on the CPU.
   maximum subtraction for stability. Vectorized paths require 16-byte alignment.
 - `mha.cu`: `softmax(Q * K^T / sqrt(d)) * V`, with `Q[M,d]`, `K[N,d]`, `V[N,d]`.
   Uses an intermediate `M*N` allocation. No masking, batching, or head dimension.
+- `alibi.cu`: the [ALiBi challenge](https://leetgpu.com/challenges/attention-with-linear-biases)
+  computes `softmax(Q*K^T/sqrt(d) + alpha*(i-j)) * V` in FP32 with Q[M,d],
+  K[N,d], V[N,d] and output[M,d]. Softmax is row-wise; the signed relative
+  position has no absolute value or causal mask, and the bias is not divided
+  by sqrt(d). M/N are 1..2048, d is 1..1024 and alpha is a float in [-1,1].
+  Output is overwritten and inputs are preserved. `make run-alibi` checks
+  formulas, tails, offsets and repeated calls against a CPU double reference;
+  `ALIBI_ARGS=--large` exercises full dimensions with bounded scores and small
+  slopes. The previously deferred exponent overflow/underflow cases are outside
+  this suite's coverage; see [testing notes](testing.md).
 
 ## Losses
 
