@@ -24,8 +24,9 @@ the best of two warm wrapper wall times, including allocation and freeing.
 analytic reference for every output element, plus Monte Carlo integration with
 10 million and 100 million samples, matrix-power analytic cases through N=1024,
 nearest-neighbor cases with 10,000/100,000 points, batch normalization at
-N=5000/10000,C=1024, and NCHW max pooling with N=4,k=3,s=2 at large spatial
-and channel dimensions.
+N=5000/10000,C=1024, NCHW max pooling with N=4,k=3,s=2 at large spatial
+and channel dimensions, integer occurrence counts with 16,777,217/100M
+elements, 3D counts at 500^3/1000^3, and subarray sums over 100M-element arrays.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -306,9 +307,145 @@ uses zero padding. The two large cases are registered but were not run pending
 these memory-safety fixes. Full-suite initcheck and an online submission are
 not claimed. Diagnostic logs are in `build/sm_80/max_pooling_2d-*.log`.
 
-`sanitize` runs memory checks on max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
+The 58-case `count_test` quick suite checks the
+[Count Array Element](https://leetgpu.com/challenges/count-array-element)
+operation with an exact CPU integer count. It covers both examples, scalar,
+int4/warp/block boundaries, each int4 component independently, every position
+of 1/2/3-element scalar tails, all/none/clustered matches, a lone match at the
+end of a million-element array, input/K endpoints, aligned input offsets, and
+independent four-byte output offsets. All inputs/K remain in [1,100000] and
+N is positive. Input pointers remain 16-byte aligned for the current int4
+kernel; arbitrary unaligned views and out-of-contract integers are excluded.
+The statement's performance note gives K=501010, which contradicts its stated
+range; the large tests follow the stated range and do not claim to reproduce
+that benchmark's data.
+
+Every case checks unchanged input bytes and output guards, with no padded
+input suffix. Each final call changes both the target K and matching positions
+on the same buffers. Most cases clear output before each call to isolate
+counting/indexing. Two nonzero-output cases and two consecutive-call cases
+separately test overwrite semantics. Those reuse cases make three calls without
+clearing output after the first call; other cases make two calls. Run
+`make run-count` (also in `make check`), select a case using
+`COUNT_ARGS="--case consecutive-calls"`, or list names using
+`COUNT_ARGS=--list-cases` without initializing CUDA.
+
+`COUNT_ARGS=--large` runs two separate correctness regressions (also in
+`make check-full`): an all-match count of 16,777,217, which cannot be stored
+exactly in FP32, and 100 million elements with a periodic mixture of matches.
+Both use the same CPU reference and changed-input second call; output is
+cleared to isolate integer counting. `--large` can be combined with
+`--case NAME` or `--list-cases`. These tests do not measure performance.
+`make sanitize-count` runs memcheck, initcheck, racecheck and synccheck, accepts
+`COUNT_ARGS`, and participates in `make sanitize`. It returns nonzero for
+either incorrect results or sanitizer errors.
+
+Initial validation on 2026-09-28 on A800 GPU 3: 54/58 quick cases and both
+large cases pass. All four failures are output-overwrite/reuse regressions:
+the unchanged implementation atomically adds to output without resetting it.
+For example, two consecutive calls on `[1,2,3,4,1]`, K=1, produce 2 then 4
+instead of 2 then 2. Memcheck/initcheck/synccheck report zero errors and
+racecheck reports zero hazards, while the sanitizer target correctly fails
+for the wrong counts. Both sm_80 and sm_75 compile; only sm_80 was run on
+hardware. No full repository check or online submission is claimed. Logs are
+in `build/sm_80/count-{quick,large,sanitize}.log`.
+
+The 73-case `count3d_test` quick suite checks
+[Count 3D Array Element](https://leetgpu.com/challenges/count-3d-array-element)
+with an exact CPU count of P across all N*M*K elements. It covers both
+examples, tiny flattened arrays, independent N/M/K boundaries through 1000,
+all six permutations of a rectangular shape with identical flattened data,
+P distinct from K, input/P endpoints, all/none matches, individual int4
+components and scalar-tail positions, each axis's last slice, a lone match
+at the final element, and aligned input/four-byte output offsets. Most final
+calls change both P and matching positions; a control and the four overwrite/
+reuse cases keep P=K to isolate output-reset errors from argument mixups.
+
+Inputs are finite-range INT32 values in [1,100], dimensions are in [1,1000],
+and input pointers remain 16-byte aligned for the current vectorized kernel.
+Empty tensors and arbitrary unaligned input views are not tested. Input tails
+are unpadded, all input bytes must remain unchanged, and output guards check
+overwrites. Baseline cases clear output before each of two calls. Two cases
+start with nonzero output; two others run three calls without clearing the
+previous result. Run `make run-count3d` (also in `make check`), select a case
+with `COUNT3D_ARGS="--case example-1"`, or list names with
+`COUNT3D_ARGS=--list-cases` without initializing CUDA.
+
+`COUNT3D_ARGS=--large` runs two separate correctness regressions, also in
+`make check-full`: the statement's 500^3 shape (125M elements) using a
+deterministic mixture, and the maximum 1000^3 shape (1B elements) with
+999,999,999 matches on the first call and one on the second. The first count
+cannot be represented exactly in FP32. CPU reference, input preservation and
+changed-input second calls are retained, with output cleared each time.
+These are correctness checks, not benchmark timings. Cases allocate inputs
+one at a time; the maximum case uses approximately 4 GB of GPU storage and
+8 GB of host storage including the preservation check. `--large` can be
+combined with `--case NAME` or `--list-cases`; listing large cases does not
+allocate their input arrays.
+`make sanitize-count3d` runs memcheck, initcheck, racecheck and synccheck,
+accepts `COUNT3D_ARGS`, and is included in `make sanitize`. Incorrect results
+or sanitizer findings cause a nonzero exit status.
+
+Validated on 2026-09-28 on A800 GPU 3 after the wrapper was updated to pass
+P as the target: 69/73 quick cases and both 500^3/1000^3 cases pass. The four
+failures are output-overwrite/reuse checks; all counting checks with cleared
+output pass, including P != K. In `consecutive-calls`, the first two calls
+produce 9 then 18 instead of 9 then 9. The current wrapper still does not
+reset output before atomic additions. Memcheck/initcheck/synccheck report
+zero errors, racecheck reports zero hazards, and the sanitizer target fails
+for incorrect counts. Both sm_80 and sm_75 compile; only sm_80 was run on
+hardware. Logs are in `build/sm_80/count3d-{quick,large,sanitize}.log`.
+
+The 74-case `slice_sum_test` quick suite follows the
+[Subarray Sum](https://leetgpu.com/challenges/subarray-sum) contract:
+`sum(input[S..E])`, with **inclusive** zero-based endpoints. Its INT64 CPU
+reference uses every selected element and requires exact INT32 output. Both
+examples, singleton/full/interior slices, warp/block/vector boundaries,
+every start offset modulo four, each scalar-tail position, distinct endpoint
+values, out-of-slice sentinels, the final element, output offsets, and changed
+ranges on reused allocations are covered. Values remain in [1,10], so every
+expected sum is positive and at most 1,000,000,000. Empty slices, negative
+inputs, arbitrary unaligned base allocations and aliasing are not tested.
+
+The input base is cudaMalloc-aligned but `input+S` need not be; no suffix
+padding hides overreads. All input bytes must be preserved and output guards
+must remain unchanged. Baseline cases clear output and make two calls, with
+all values changed to `11-value` on the final call. Two nonzero-output and
+two consecutive-call cases check overwrite semantics; reuse cases make three
+calls without clearing the previous result. Single-element overwrite/reuse
+cases isolate output-reset failures from multi-element indexing errors.
+`range-change` and `consecutive-blocks` also change S/E on the final call.
+Launch errors mark a case as failed; unrecoverable execution errors still
+terminate the process. Memcheck with `--destroy-on-device-error kernel` can
+be used for diagnostics to terminate faulting kernels and continue later cases.
+
+Run `make run-slice-sum` (also in `make check`), select individual cases with
+`SLICE_SUM_ARGS="--case example-1"`, or list names using
+`SLICE_SUM_ARGS=--list-cases` without initializing CUDA.
+`SLICE_SUM_ARGS=--large` runs two separate 100M-element regressions, also
+included in `make check-full`: a full slice with the maximum sum 1,000,000,000,
+and an aligned interior slice of length 99,999,995. The odd interior sum
+cannot be stored exactly in FP32. Both retain exact CPU references, changed
+inputs, cleared outputs and preservation checks. `--large` can be combined
+with `--case NAME` or `--list-cases`; large arrays are allocated only when
+executing their case. These are correctness checks, not performance timings.
+`make sanitize-slice-sum` runs memcheck, initcheck, racecheck and synccheck,
+accepts `SLICE_SUM_ARGS`, and participates in `make sanitize`. Both numerical
+failures and sanitizer findings cause a nonzero exit status.
+
+Validated on 2026-09-28 on A800 GPU 3 after correcting the inclusive length
+and scalar-loop indexing: 70/74 quick cases and both 100M-element cases pass.
+All four failures concern overwriting nonzero/previous output. For the
+single-element input `[7]`, consecutive calls return 7 then 14 instead of
+7 then 7 because the wrapper does not reset output before atomic additions.
+The complete quick suite reports zero memcheck/initcheck/synccheck errors
+and zero racecheck hazards; sanitizer execution still returns failure for
+the incorrect sums. Both sm_80 and sm_75 compile, with only sm_80 run on
+hardware. Current logs are in `build/sm_80/slice_sum-{quick,large,sanitize}.log`.
+
+`sanitize` runs memory checks on subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
-and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
+and synchronization checks on subarray sums, counting, the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.
 
 ## Optional Triton GEMM

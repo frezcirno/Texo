@@ -20,6 +20,36 @@ before consuming outputs on the CPU.
   Explicit tile scratch supports the target architectures used by this project.
 - `sum_cub.cu`: CUB baseline with cached temporary storage. The cache is intended
   for sequential calls on one device; it is not thread-safe or device-switch-safe.
+- `slice_sum.cu`: sum INT32 `input[S..E]` into separate `output[1]`, with
+  **both endpoints inclusive**. The [Subarray Sum contract](https://leetgpu.com/challenges/subarray-sum)
+  specifies N in [1,100000000], input values in [1,10], and
+  `0 <= S <= E < N`; S=E returns one element and the largest sum fits INT32.
+  Tests use aligned input allocations but arbitrary legal S, including all
+  four offsets modulo four. A vectorized implementation must handle slice
+  starts that are not 16-byte aligned. Tests use exact INT64 CPU references,
+  unpadded input tails, input preservation and output guards. Empty slices,
+  negative inputs and aliasing are outside the tested contract. Run
+  `make run-slice-sum`; `SLICE_SUM_ARGS=--large` checks full/interior slices of
+  100M-element arrays. See [testing notes](testing.md).
+- `count.cu`: count the INT32 elements equal to K in contiguous `input[N]`,
+  writing one INT32 result to separate `output[1]`. The
+  [LeetGPU contract](https://leetgpu.com/challenges/count-array-element) gives
+  N in [1,100000000], input/K in [1,100000]; every possible count fits INT32.
+  Inputs must be 16-byte aligned for the current `int4` loads; tests retain
+  this alignment and leave scalar tails unpadded. Empty inputs and arbitrary
+  unaligned input views are not covered. Baseline cases clear output before
+  each call; separate regressions require overwriting nonzero/previous results.
+  Run `make run-count`; `COUNT_ARGS=--large` checks 16,777,217/100M elements.
+  See [testing notes](testing.md) for the initial output-reset failure.
+- `count3d.cu`: count occurrences of P in contiguous INT32 `input[N,M,K]`,
+  writing one INT32 result to separate `output[1]`. K is a dimension; P is the
+  comparison value. The [LeetGPU contract](https://leetgpu.com/challenges/count-3d-array-element)
+  gives each dimension in [1,1000] and input/P in [1,100]. The total count is
+  at most 1,000,000,000 and fits INT32. Tests use 16-byte aligned input for the
+  current int4 loads, positive dimensions, unpadded tails, exact CPU counts,
+  unchanged-input/output-guard checks, and separate output-overwrite cases.
+  Run `make run-count3d`; `COUNT3D_ARGS=--large` selects 500^3/1000^3 cases.
+  See [testing notes](testing.md) for validation and large-test memory use.
 - `max.cu`: float maximum; vectorized input requires 16-byte alignment. The empty
   reduction produces negative infinity. NaN behavior is not specified by the tests.
 - `top_k.cu`: float input `[N]` to descending output `[k]`, preserving duplicates
