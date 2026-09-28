@@ -11,7 +11,7 @@ TEST_DIR := tests
 PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
             conv3d_bench mv_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test geglu_test
-BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test mm_int8_test lr_test mc_int_test mat_pow_test nn_test
+BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test mm_int8_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test max_pooling_2d_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS) lr_newton_test
 GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_wmma_tiled_bench \
                 gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_aligned_bench \
@@ -30,6 +30,8 @@ MM_INT8_ARGS ?=
 MC_INT_ARGS ?=
 MAT_POW_ARGS ?=
 NN_ARGS ?=
+BN_ARGS ?=
+POOL_ARGS ?=
 NSYS ?= $(CUDA_HOME)/bin/nsys
 NSYS_DIR ?= $(BIN_DIR)/nsys
 NSYS_FLAGS ?= --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none
@@ -67,6 +69,8 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
         run-sigmoid run-geglu run-rgb2grayscale run-batched-mm run-mm-int8 run-lr run-mc-int \
         sanitize-mc-int run-mat-pow sanitize-mat-pow run-nn sanitize-nn \
+        run-batch-norm sanitize-batch-norm \
+        run-max-pooling-2d sanitize-max-pooling-2d \
         run-gemm-tile run-gemm-wmma run-gemm-wmma-tiled run-gemm-cublas run-gemm-compare check-gemm \
         run-gemm-wmma-tiled-pipeline run-gemm-wmma-tiled-pipeline-aligned \
         run-gemm-wmma-tiled-pipeline-aligned-swizzled run-gemm-wmma-tiled-pipeline-multistage \
@@ -349,6 +353,10 @@ run-mat-pow: $(BIN_DIR)/mat_pow_test
 	$< $(MAT_POW_ARGS)
 run-nn: $(BIN_DIR)/nn_test
 	$< $(NN_ARGS)
+run-batch-norm: $(BIN_DIR)/batch_norm_test
+	$< $(BN_ARGS)
+run-max-pooling-2d: $(BIN_DIR)/max_pooling_2d_test
+	$< $(POOL_ARGS)
 
 # Small reproducible GPU checks. Every executable returns nonzero on failure.
 check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
@@ -400,11 +408,13 @@ check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/mc_int_test
 	$(BIN_DIR)/mat_pow_test
 	$(BIN_DIR)/nn_test
+	$(BIN_DIR)/batch_norm_test
+	$(BIN_DIR)/max_pooling_2d_test
 ifeq ($(WITH_TRITON),1)
 	$(MAKE) check-gemm-triton
 endif
 
-# Large regression suites, including matrix power and nearest neighbor.
+# Large regression suites.
 check-full: check
 	$(BIN_DIR)/mse_test
 	$(BIN_DIR)/top_k_test 50000000 100
@@ -412,6 +422,8 @@ check-full: check
 	$(BIN_DIR)/mc_int_test --large
 	$(BIN_DIR)/mat_pow_test --large
 	$(BIN_DIR)/nn_test --large
+	$(BIN_DIR)/batch_norm_test --large
+	$(BIN_DIR)/max_pooling_2d_test --large
 
 COMPUTE_SANITIZER ?= compute-sanitizer
 sanitize-mc-int: $(BIN_DIR)/mc_int_test
@@ -428,6 +440,16 @@ sanitize-nn: $(BIN_DIR)/nn_test
 	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --print-limit 20 --error-exitcode 1 $< $(NN_ARGS) || nn_status=1; \
 	$(COMPUTE_SANITIZER) --tool initcheck --print-limit 20 --error-exitcode 1 $< $(NN_ARGS) || nn_status=1; \
 	exit $$nn_status
+sanitize-batch-norm: $(BIN_DIR)/batch_norm_test
+	@bn_status=0; \
+	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --error-exitcode 1 $< $(BN_ARGS) || bn_status=1; \
+	$(COMPUTE_SANITIZER) --tool initcheck --error-exitcode 1 $< $(BN_ARGS) || bn_status=1; \
+	exit $$bn_status
+sanitize-max-pooling-2d: $(BIN_DIR)/max_pooling_2d_test
+	@pool_status=0; \
+	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --print-limit 20 --error-exitcode 1 $< $(POOL_ARGS) || pool_status=1; \
+	$(COMPUTE_SANITIZER) --tool initcheck --print-limit 20 --error-exitcode 1 $< $(POOL_ARGS) || pool_status=1; \
+	exit $$pool_status
 sanitize: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_bench 17 33 19 0
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_bench 65 129 67 0
@@ -478,6 +500,8 @@ sanitize: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(MAKE) sanitize-mc-int
 	$(MAKE) sanitize-mat-pow
 	$(MAKE) sanitize-nn
+	$(MAKE) sanitize-batch-norm
+	$(MAKE) sanitize-max-pooling-2d
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/cat_ce_test 257 65
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/mse_test 257
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/top_k_test 4097 2049
@@ -490,7 +514,7 @@ help:
 	@echo 'all             Build tests and benchmarks (no GPU needed)'
 	@echo 'compile-kernels Compile every src/*.cu independently'
 	@echo 'check           Run small GPU correctness checks'
-	@echo 'check-full      Also run large MSE, top-k, INT8 matmul, Monte Carlo, matrix power and nearest-neighbor regressions'
+	@echo 'check-full      Also run large MSE, top-k, INT8 matmul, Monte Carlo, matrix power, nearest-neighbor, batch-norm and max-pooling regressions'
 	@echo 'sanitize        Run selected memory/synchronization checks'
 	@echo 'run-<operator>  Run one test/benchmark with default arguments'
 	@echo 'run-mm-int8     Check INT8 quantization; MM_INT8_ARGS=--large checks 8192x4096x2048'
@@ -501,6 +525,12 @@ help:
 	@echo 'run-nn         Check nearest neighbors; NN_ARGS="--case NAME" isolates a case'
 	@echo '               NN_ARGS=--large checks 10K/100K points; --list-cases lists quick cases'
 	@echo 'sanitize-nn    Run nearest-neighbor memory/leak/initialization checks; accepts NN_ARGS'
+	@echo 'run-batch-norm Check batch normalization; BN_ARGS="--case NAME" isolates a case'
+	@echo '               BN_ARGS=--large checks N=5000/10000,C=1024; --list-cases lists quick cases'
+	@echo 'sanitize-batch-norm Run batch-norm memory/leak/initialization checks; accepts BN_ARGS'
+	@echo 'run-max-pooling-2d Check NCHW max pooling; POOL_ARGS="--case NAME" isolates a case'
+	@echo '               POOL_ARGS=--large checks N=4,k=3,s=2; --list-cases lists cases'
+	@echo 'sanitize-max-pooling-2d Run max-pooling memory/leak/initialization checks; accepts POOL_ARGS'
 	@echo 'check-gemm      Check scalar, tiled, all WMMA variants, and cuBLAS GEMM'
 	@echo 'run-gemm-compare Compare all fourteen GEMMs; GEMM_ARGS="M N K repeats"'
 	@echo 'run-gemm-wmma-tiled-pipeline Run async/double-buffered WMMA; uses GEMM_ARGS'

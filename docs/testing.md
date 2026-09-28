@@ -23,7 +23,9 @@ the best of two warm wrapper wall times, including allocation and freeing.
 `check-full` also runs an INT8 8192x4096x2048 cancellation regression with an
 analytic reference for every output element, plus Monte Carlo integration with
 10 million and 100 million samples, matrix-power analytic cases through N=1024,
-and nearest-neighbor cases with 10,000/100,000 points.
+nearest-neighbor cases with 10,000/100,000 points, batch normalization at
+N=5000/10000,C=1024, and NCHW max pooling with N=4,k=3,s=2 at large spatial
+and channel dimensions.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -219,7 +221,92 @@ checks only storage safety because the challenge does not specify a sentinel.
 Both sm_80 and sm_75 compile; only sm_80 was run on hardware. No physical T4 run
 or online submission is implied by these local checks.
 
-`sanitize` runs memory checks on nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
+The 52-case `batch_norm_test` quick suite uses an independent CPU FP64 Welford reference for the
+[Batch Normalization](https://leetgpu.com/challenges/batch-normalization)
+formula. It reduces over rows per channel, divides variance by N, and adds
+eps=1e-5 inside the square root. Local tolerances are atol=1e-4 and rtol=1e-4.
+Cases cover both examples (using the formula rather than their rounded display
+values), N/C boundaries, N=1, zero/constant channels, population variance,
+independent channel statistics and affine parameters, epsilon-dominated small
+variance, large offsets, active last rows/channels, and separately unaligned
+input/gamma/beta/output pointers. A 10000-row constant-decimal regression checks
+mean-accumulation drift against the analytic output beta. All inputs and affine
+parameters remain in the challenge's stated ranges; zero/negative gamma,
+alternative eps values, empty dimensions and in-place output are not tested.
+
+Every case runs twice on the same allocations. The second call changes input
+mean/variance and gamma/beta, with a fresh independent reference. All three
+inputs are checked for bytewise preservation, output is poisoned before each
+call, output guards detect overwrites, and input allocations have no suffix
+padding for memcheck. Run `make run-batch-norm` (also in `make check`), use
+`BN_ARGS="--case constant-decimal-long"` for an individual case, or
+`BN_ARGS=--list-cases` to list quick cases without initializing CUDA.
+`BN_ARGS=--large` runs the separate N=5000/10000,C=1024 cases, also in
+`make check-full`; these are correctness checks, not timings.
+`make sanitize-batch-norm` runs memcheck with leak checking and initcheck, accepts
+`BN_ARGS`, and is included in `make sanitize`.
+
+Initial validation on 2026-09-27 on A800: 51/52 quick cases and both large cases
+pass. The constant-decimal regression fails: for a 10000-row channel of 0.1f,
+gamma=10 and beta=0, the output is about 0.030723 instead of zero. The three
+constant channels expose FP32 mean-accumulation drift, with a maximum output
+error of about 9.49 across both calls. Memcheck and initcheck report zero memory
+errors and memcheck reports zero leaked allocations, but the sanitizer target
+correctly returns failure for the numerical mismatch. Both sm_80 and sm_75
+compile; only sm_80 was run on hardware. The operator implementation was left
+unchanged while adding these tests.
+
+The 64-case `max_pooling_2d_test` quick suite covers both
+[2D Max Pooling examples](https://leetgpu.com/challenges/2d-max-pooling), scalar
+and identity windows, rectangular/single-row/single-column inputs, dimensions
+around 16/32 boundaries, every kernel size and stride from 1 through 16,
+nondivisible output sizes, overlapping and separated windows, all-negative/zero
+inputs, repeated maxima, independent batch/channel planes, an active last
+corner, N=100/C=512 limits, and separately unaligned input/output pointers.
+The independent CPU oracle clips windows to the original input H/W, with floor
+output dimensions and exact FP32 comparisons: max selects an input value, so
+there is no reduction-rounding tolerance. Both published answers also check
+the oracle itself.
+
+The challenge does not explicitly specify the padding value. Local tests use
+negative infinity following [standard MaxPool2d semantics](https://docs.pytorch.org/docs/stable/generated/torch.nn.MaxPool2d.html);
+padding must not replace a negative maximum with zero. Cases use finite inputs,
+positive output dimensions and `padding <= kernel_size/2`, so every window
+contains input. Larger padding, all-padding windows, empty tensors, NaN/Inf
+inputs and in-place operation are not covered. No claim about hidden platform
+behavior for those ambiguous cases is made.
+
+Each case runs twice on the same buffers; the second input is reversed and
+affinely transformed. Checks include unchanged input bytes, NaN/finite output
+poison, output guards and unpadded input tails. Run `make run-max-pooling-2d`
+(also in `make check`), use `POOL_ARGS="--case example-1"` to isolate a case,
+or `POOL_ARGS=--list-cases` to list cases without CUDA initialization.
+`POOL_ARGS=--large` runs separate N=4,k=3,s=2,p=1 cases with
+`C/H/W=8/1024/1023` and `512/63/65`, also included in `make check-full`.
+`--large` can be combined with `--case NAME` or `--list-cases`. These are
+correctness checks, not performance measurements. `make sanitize-max-pooling-2d`
+runs memcheck with leak checking and initcheck, accepts `POOL_ARGS`, and is
+included in `make sanitize`; functional or sanitizer failures return nonzero.
+
+Initial validation on 2026-09-28 on A800 GPU 3: both sm_80 and sm_75 builds
+pass; only sm_80 was run on hardware. With the operator left unchanged, the
+quick suite reports 5/64 passing under memcheck with
+`--destroy-on-device-error kernel` (faulting kernels are terminated so later
+cases can still run). Memcheck detects out-of-bounds writes in `floor-tail`
+and a separate `kernel-6` run confirms out-of-bounds reads. The passing
+`identity-rectangular` case also passes the Makefile sanitizer target with zero
+memcheck/initcheck errors and zero leaked allocations.
+
+Three isolated normal runs confirm functional failures without invalid memory
+accesses: `example-1` returns 4 instead of 5 at the first output, `downsample-2x2`
+leaves outputs unwritten, and `all-negative-p1` returns 0 instead of -0.125 at
+the first output. The implementation uses output H/W for input addressing,
+computes dimensions as `H+2*p-s*k+1` instead of `floor((H+2*p-k)/s)+1`, and
+uses zero padding. The two large cases are registered but were not run pending
+these memory-safety fixes. Full-suite initcheck and an online submission are
+not claimed. Diagnostic logs are in `build/sm_80/max_pooling_2d-*.log`.
+
+`sanitize` runs memory checks on max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

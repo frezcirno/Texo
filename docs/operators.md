@@ -58,6 +58,28 @@ before consuming outputs on the CPU.
   any non-self index at the minimum distance. N=1 has no such index and no
   documented sentinel: its test checks storage safety only. Run `make run-nn`,
   or select individual/large cases via `NN_ARGS`; see [testing notes](testing.md).
+- `batch_norm.cu`: training-style batch normalization of FP32 `input[N,C]`,
+  computing statistics independently per column across N rows. Population
+  variance divides by N, and `eps` is added inside the square root before
+  applying `gamma[C]` and `beta[C]`. There are no running statistics or updates
+  to input/parameters; output is a separate overwritten `[N,C]` array.
+  The [LeetGPU contract](https://leetgpu.com/challenges/batch-normalization)
+  specifies N in [1,10000], C in [1,1024], input in [-100,100], gamma in [0.1,10],
+  beta in [-10,10], and eps=1e-5. N=1 and constant channels mathematically yield
+  beta. Run `make run-batch-norm`; `BN_ARGS=--large` checks N=5000/10000,C=1024.
+- `max_pooling_2d.cu`: FP32 max pooling from contiguous `input[N,C,H,W]` to
+  separate overwritten `output[N,C,H_out,W_out]` in NCHW order. Tests use
+  `H_out = floor((H + 2*padding - kernel_size) / stride) + 1`, likewise for W,
+  with input-window origins `(h_out*stride-padding, w_out*stride-padding)`.
+  Input addressing uses the original H/W, independently of output dimensions.
+  The [LeetGPU statement](https://leetgpu.com/challenges/2d-max-pooling) gives
+  N in [1,100], C in [1,512], H/W in [1,1024], kernel/stride in [1,16], and
+  padding in [0,16]. It does not explicitly define the padding value; local
+  tests follow standard negative-infinity max-pool padding, with positive
+  output dimensions and `padding <= kernel_size/2`. Empty outputs, all-padding
+  windows, nonfinite inputs and aliasing are outside the tested contract.
+  Run `make run-max-pooling-2d`; `POOL_ARGS=--large` selects N=4,k=3,s=2
+  spatial/channel regressions. See [testing notes](testing.md) for limitations.
 - `mv.cu`: `A[M,N] * x[N] -> y[M]`, float. `solve` uses a 256-thread block per
   row when N is at least 1024 (M <= 64), 2048 (65 <= M <= 1024), or 4096
   (M > 1024); otherwise it uses one warp per row, eight rows per block.
