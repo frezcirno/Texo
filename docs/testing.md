@@ -335,23 +335,19 @@ also in `make check-full`; these are correctness checks, not timings.
 initcheck/racecheck/synccheck only if that run succeeds. It accepts `GN_ARGS`,
 is included in `make sanitize`, and returns nonzero on any failure.
 
-Revalidated on 2026-09-28 on A800 GPU 3 after deriving n/group from blockIdx.x
-and setting work to `(C/G)*H*W`: both sm_80 and sm_75 compile, with an unused
-`c_end` warning; only sm_80 was run on hardware. The quick suite still reports
-1/60 cases passing under memcheck (only `scalar`), but memcheck now reports
-zero access errors and zero leaked allocations. The diagnostic command retained
-`--destroy-on-device-error kernel`; no access errors were reported in this run.
-The first output in `example-1` is about -0.353553 instead of -0.999995, and
-many outputs retain the poison value because they are never written.
+Validated on 2026-09-28 on A800 GPU 3 after correcting the launch to N*G
+blocks, the group-local channel index, and the mean/variance divisor: all
+60 quick cases and both large cases pass. The complete quick suite also
+passes memcheck, initcheck, racecheck and synccheck, with zero reported errors,
+zero race hazards and zero leaked allocations. Both calls of every case pass,
+including changed input/affine parameters, independent batches/groups,
+rectangular spatial shapes and pointer offsets.
 
-Three implementation issues remain: the launch uses `ceil(N*G/256)` blocks
-although one block handles each `(batch, group)`; the group-local channel
-index still divides by G and takes modulo N instead of advancing once per
-H*W spatial elements; both mean and variance still divide by N rather than
-the group's element count. The two large cases and full-suite
-initcheck/racecheck/synccheck remain deferred pending these correctness fixes.
-No physical T4 run or online submission is claimed. This revision's log is
-`build/sm_80/group_norm-recheck3-memcheck.log`.
+The large cases were run for correctness without sanitizer instrumentation;
+the maximum absolute error in this run was about 5.6e-6. Both sm_80 and sm_75
+compile, with an unused `c_end` warning; only sm_80 was run on hardware.
+No physical T4 run or online submission is implied. Logs for this revision
+are in `build/sm_80/group_norm-validated-{quick,large,sanitize}.log`.
 
 The 64-case `max_pooling_2d_test` quick suite covers both
 [2D Max Pooling examples](https://leetgpu.com/challenges/2d-max-pooling), scalar

@@ -140,7 +140,7 @@ before consuming outputs on the CPU.
   G=1 normalizes each sample over C/H/W; G=C normalizes each channel over H/W.
   A group with one element or constant values mathematically outputs beta.
   Run `make run-group-norm`; `GN_ARGS=--large` checks the challenge performance
-  shape and H/W=128. See [testing notes](testing.md) for current failures.
+  shape and H/W=128. See [testing notes](testing.md) for validation results.
 - `max_pooling_2d.cu`: FP32 max pooling from contiguous `input[N,C,H,W]` to
   separate overwritten `output[N,C,H_out,W_out]` in NCHW order. Tests use
   `H_out = floor((H + 2*padding - kernel_size) / stride) + 1`, likewise for W,
