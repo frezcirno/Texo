@@ -54,22 +54,21 @@ template <> struct Vector4<double> {
 template <int BLOCK_SIZE, typename T, typename Tout>
 __global__ void dot(const T *__restrict__ A, const T *__restrict__ B,
                     Tout *__restrict__ output, int N) {
-  using T4 = typename Vector4<T>::type;
+  using T2 = typename Vector2<T>::type;
   const size_t tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
   const size_t stride = gridDim.x * BLOCK_SIZE;
 
   Tout sum = 0;
 
-  size_t N4 = N / 4;
-  const auto *A4 = reinterpret_cast<const T4 *>(A);
-  const auto *B4 = reinterpret_cast<const T4 *>(B);
-  for (int i = tid; i < N4; i += stride) {
-    T4 v = A4[i];
-    T4 w = B4[i];
-    sum += Tout(v.x) * Tout(w.x) + Tout(v.y) * Tout(w.y) +
-           Tout(v.z) * Tout(w.z) + Tout(v.w) * Tout(w.w);
+  size_t N2 = N / 2;
+  const auto *A2 = reinterpret_cast<const T2 *>(A);
+  const auto *B2 = reinterpret_cast<const T2 *>(B);
+  for (int i = tid; i < N2; i += stride) {
+    T2 v = A2[i];
+    T2 w = B2[i];
+    sum += Tout(v.x) * Tout(w.x) + Tout(v.y) * Tout(w.y);
   }
-  int tail_base = N4 * 4;
+  int tail_base = N2 * 2;
   if (tail_base + tid < N) {
     sum += Tout(A[tail_base + tid]) * Tout(B[tail_base + tid]);
   }
@@ -80,8 +79,8 @@ __global__ void dot(const T *__restrict__ A, const T *__restrict__ B,
   }
 }
 
-template <typename T1, typename T4>
-__global__ void memcpy_kernel(T1 *dst, const T4 *src, const size_t N) {
+template <typename T1, typename T2>
+__global__ void memcpy_kernel(T1 *dst, const T2 *src, const size_t N) {
   const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= N)
     return;
@@ -89,8 +88,16 @@ __global__ void memcpy_kernel(T1 *dst, const T4 *src, const size_t N) {
 }
 
 // A, B, result are device pointers
-extern "C" void solve(const float *A, const float *B, float *result, int N) {
+extern "C" void solve(const half *A, const half *B, half *result, int N) {
+  float *buffer;
+  cudaMalloc(&buffer, sizeof(float));
+  cudaMemset(buffer, 0, sizeof(float));
+
   constexpr size_t BLOCK_SIZE = 256;
   dot<BLOCK_SIZE>
-      <<<(N + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(A, B, result, N);
+      <<<(N + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(A, B, buffer, N);
+
+  memcpy_kernel<<<1, 1>>>(result, buffer, 1);
+
+  cudaFree(buffer);
 }
