@@ -31,6 +31,25 @@ before consuming outputs on the CPU.
   negative inputs and aliasing are outside the tested contract. Run
   `make run-slice-sum`; `SLICE_SUM_ARGS=--large` checks full/interior slices of
   100M-element arrays. See [testing notes](testing.md).
+- `slice_sum2d.cu`: sum a rectangular region of contiguous row-major INT32
+  `input[N,M]` into separate `output[1]`. Both row and column endpoints are
+  inclusive; input rows remain M elements apart even when the selected
+  rectangle is narrower. The [2D Subarray Sum contract](https://leetgpu.com/challenges/2d-subarray-sum)
+  specifies N/M in [1,10000], values in [1,10], and nonempty regions within
+  the matrix. Every possible sum fits INT32. Tests use an exact INT64 CPU
+  reference, input preservation, output guards and separate overwrite/reuse
+  checks. Run `make run-slice-sum2d`; `SLICE_SUM2D_ARGS=--large` selects
+  full/interior regions of 10000x10000 matrices. See [testing notes](testing.md).
+- `slice_sum3d.cu`: sum a cuboid in contiguous row-major INT32 `input[N,M,K]`
+  into separate `output[1]`. Depth, row and column endpoints are all inclusive;
+  input row/depth strides stay K and M*K regardless of the selected cuboid.
+  The [3D Subarray Sum contract](https://leetgpu.com/challenges/3d-subarray-sum)
+  gives each dimension in [1,500] and input values in [1,10], with nonempty
+  regions inside the tensor. The maximum sum, 1,250,000,000, fits INT32.
+  Tests use independent INT64 CPU sums, input preservation, output guards,
+  and separate output-overwrite/reuse regressions. Run `make run-slice-sum3d`;
+  `SLICE_SUM3D_ARGS=--large` selects full/interior regions of 500^3 tensors.
+  See [testing notes](testing.md) for validation status.
 - `count.cu`: count the INT32 elements equal to K in contiguous `input[N]`,
   writing one INT32 result to separate `output[1]`. The
   [LeetGPU contract](https://leetgpu.com/challenges/count-array-element) gives

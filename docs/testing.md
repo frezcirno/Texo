@@ -26,7 +26,8 @@ analytic reference for every output element, plus Monte Carlo integration with
 nearest-neighbor cases with 10,000/100,000 points, batch normalization at
 N=5000/10000,C=1024, NCHW max pooling with N=4,k=3,s=2 at large spatial
 and channel dimensions, integer occurrence counts with 16,777,217/100M
-elements, 3D counts at 500^3/1000^3, and subarray sums over 100M-element arrays.
+elements, 3D counts at 500^3/1000^3, subarray sums over 100M-element arrays,
+2D subarray sums over 10000x10000 matrices, and 3D subarray sums over 500^3 tensors.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -443,7 +444,99 @@ and zero racecheck hazards; sanitizer execution still returns failure for
 the incorrect sums. Both sm_80 and sm_75 compile, with only sm_80 run on
 hardware. Current logs are in `build/sm_80/slice_sum-{quick,large,sanitize}.log`.
 
-`sanitize` runs memory checks on subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
+The 71-case `slice_sum2d_test` quick suite follows
+[2D Subarray Sum](https://leetgpu.com/challenges/2d-subarray-sum): row and
+column endpoints are inclusive, and rows use the original matrix width M.
+An independent nested-loop INT64 CPU reference checks exact INT32 results;
+the two published answers also validate the oracle. Cases cover both
+examples, independent rectangle-height/width boundaries, flattened areas
+around warp/block boundaries, single-row/column matrices, all four matrix
+corners, individually distinguished rectangle corners, original row strides,
+out-of-region sentinels, last rows/columns, output offsets, and changed regions.
+Inputs remain in [1,10] and dimensions in [1,10000], so sums fit INT32.
+Empty/invalid regions, negative inputs and input/output aliasing are excluded.
+
+Inputs have no allocation suffix padding and must remain bitwise unchanged;
+output guards detect overwrites. Baseline cases clear output and run twice,
+transforming inputs to `11-value` on the final call. Two cases start from
+nonzero output and two reuse cases run three times without clearing previous
+results; singletons isolate the output-reset requirement. Region changes also
+alter the rectangle's shape/area on the same input/output allocations.
+Run `make run-slice-sum2d` (also in `make check`), select a case with
+`SLICE_SUM2D_ARGS="--case original-row-stride"`, or list cases using
+`SLICE_SUM2D_ARGS=--list-cases` without initializing CUDA.
+
+`SLICE_SUM2D_ARGS=--large` runs two separate 10000x10000 regressions, also in
+`make check-full`: the full matrix with sum 1,000,000,000, and an interior
+9999x9995 region with the odd sum 99,940,005 (not exactly representable in FP32).
+Both use cleared output, independent references, changed-input second calls,
+guards and input preservation. Large inputs allocate one case at a time;
+`--large` also accepts `--case NAME` or `--list-cases`, and listing does not
+allocate the large arrays. These are correctness checks, not timings.
+`make sanitize-slice-sum2d` runs memcheck, initcheck, racecheck and synccheck,
+accepts `SLICE_SUM2D_ARGS`, and participates in `make sanitize`. Functional
+failures and sanitizer findings both produce a nonzero exit status.
+
+Validated on 2026-09-28 on A800 GPU 3: 67/71 quick cases and both 10000x10000
+cases pass. All cleared-output checks pass, including row strides and inclusive
+boundaries. The four overwrite/reuse cases fail because output is not reset
+before atomic additions: two consecutive calls on the single-element matrix
+`[[7]]` return 7 then 14 instead of 7 then 7. Memcheck/initcheck/synccheck
+report zero errors and racecheck reports zero hazards; the sanitizer target
+still returns failure for incorrect results. Both sm_80 and sm_75 compile,
+with only sm_80 run on hardware. The operator implementation was not changed
+while adding tests. Logs are in `build/sm_80/slice_sum2d-{quick,large,sanitize}.log`.
+
+The 87-case `slice_sum3d_test` quick suite follows
+[3D Subarray Sum](https://leetgpu.com/challenges/3d-subarray-sum): all six
+endpoints are inclusive, and input row/depth strides are the original K and
+M*K. An independent three-loop INT64 CPU reference checks exact INT32 sums;
+the two published answers also validate the oracle. Coverage includes both
+examples, scalar/axis-line inputs, independent depth/height/width boundaries,
+flattened volumes around warp/block boundaries, distinct values per depth,
+original strides, out-of-region sentinels, all eight tensor corners, individually
+distinguished cuboid corners, final depth/row/column slices, output offsets,
+and changed cuboids on reused allocations. Dimensions stay in [1,500], values
+in [1,10], and every expected sum fits INT32. Empty/invalid regions, negative
+inputs and aliasing are outside the tested contract.
+
+No allocation suffix padding hides final-layer overreads. All input bytes
+must be preserved and output guards must remain unchanged. Baseline cases
+clear output and run twice, with inputs transformed to `11-value` on the last
+call. Two nonzero-output cases and two three-call reuse cases require overwrite
+semantics; singleton cases isolate output-reset failures from 3D indexing.
+`region-change` and `consecutive-blocks` also change the cuboid on the final
+call. Run `make run-slice-sum3d` (also in `make check`), select a case using
+`SLICE_SUM3D_ARGS="--case distinct-depths"`, or list cases with
+`SLICE_SUM3D_ARGS=--list-cases` without initializing CUDA.
+
+`SLICE_SUM3D_ARGS=--large` runs two separate 500^3 regressions, also registered
+in `make check-full`: a full tensor with the maximum sum 1,250,000,000, and an
+interior 499x497x495 cuboid with the odd sum 122,761,485 (not exactly FP32).
+They retain exact CPU references, cleared outputs, changed-input second calls,
+input preservation and output guards. Large arrays allocate one case at a
+time; `--large` can be combined with `--case NAME` or `--list-cases`, and
+listing does not allocate the arrays. These are correctness checks, not timings.
+`make sanitize-slice-sum3d` runs memcheck, initcheck, racecheck and synccheck,
+accepts `SLICE_SUM3D_ARGS`, and participates in `make sanitize`. Functional
+failures and sanitizer findings cause nonzero exit status.
+
+Initial validation on 2026-09-28 on A800 GPU 3: the quick suite reports 22/87
+passing under memcheck with `--destroy-on-device-error kernel`, which allows
+later cases to run after terminating faulting kernels. Memcheck detects
+out-of-bounds reads; the row coordinate currently keeps increasing across
+depths instead of returning to the first selected row. An isolated normal
+`example-1` run returns 9 instead of 7. Separately, `consecutive-calls` returns
+7 then 14 instead of 7 then 7, confirming that output is not reset.
+
+The single-depth `example-2` passes all four tools through the Makefile
+sanitizer target with zero reported errors/hazards; this is not a full-suite
+sanitizer pass. The two large cases are registered but were not run pending
+the indexing/memory-safety fix. Both sm_80 and sm_75 compile; only sm_80 was
+run on hardware. The operator was left unchanged while adding tests. Logs are
+in `build/sm_80/slice_sum3d-{memcheck,example-1,consecutive-calls,sanitize-example2}.log`.
+
+`sanitize` runs memory checks on 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on subarray sums, counting, the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.
