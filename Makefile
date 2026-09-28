@@ -11,7 +11,7 @@ TEST_DIR := tests
 PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
             conv3d_bench mv_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test geglu_test
-BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test mm_int8_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test rms_norm_test group_norm_test max_pooling_2d_test count_test count3d_test slice_sum_test slice_sum2d_test slice_sum3d_test
+BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test mm_int8_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test rms_norm_test group_norm_test layer_norm_test max_pooling_2d_test count_test count3d_test slice_sum_test slice_sum2d_test slice_sum3d_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS) lr_newton_test
 GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_wmma_tiled_bench \
                 gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_aligned_bench \
@@ -33,6 +33,7 @@ NN_ARGS ?=
 BN_ARGS ?=
 RMS_ARGS ?=
 GN_ARGS ?=
+LN_ARGS ?=
 POOL_ARGS ?=
 COUNT_ARGS ?=
 COUNT3D_ARGS ?=
@@ -79,6 +80,7 @@ SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
         run-batch-norm sanitize-batch-norm \
         run-rms-norm sanitize-rms-norm \
         run-group-norm sanitize-group-norm \
+        run-layer-norm sanitize-layer-norm \
         run-max-pooling-2d sanitize-max-pooling-2d \
         run-count sanitize-count \
         run-count3d sanitize-count3d \
@@ -373,6 +375,8 @@ run-rms-norm: $(BIN_DIR)/rms_norm_test
 	$< $(RMS_ARGS)
 run-group-norm: $(BIN_DIR)/group_norm_test
 	$< $(GN_ARGS)
+run-layer-norm: $(BIN_DIR)/layer_norm_test
+	$< $(LN_ARGS)
 run-max-pooling-2d: $(BIN_DIR)/max_pooling_2d_test
 	$< $(POOL_ARGS)
 run-count: $(BIN_DIR)/count_test
@@ -439,6 +443,7 @@ check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/batch_norm_test
 	$(BIN_DIR)/rms_norm_test
 	$(BIN_DIR)/group_norm_test
+	$(BIN_DIR)/layer_norm_test
 	$(BIN_DIR)/max_pooling_2d_test
 	$(BIN_DIR)/count_test
 	$(BIN_DIR)/count3d_test
@@ -460,6 +465,7 @@ check-full: check
 	$(BIN_DIR)/batch_norm_test --large
 	$(BIN_DIR)/rms_norm_test --large
 	$(BIN_DIR)/group_norm_test --large
+	$(BIN_DIR)/layer_norm_test --large
 	$(BIN_DIR)/max_pooling_2d_test --large
 	$(BIN_DIR)/count_test --large
 	$(BIN_DIR)/count3d_test --large
@@ -498,6 +504,12 @@ sanitize-group-norm: $(BIN_DIR)/group_norm_test
 	@gn_status=0; for tool in initcheck racecheck synccheck; do \
 	  $(COMPUTE_SANITIZER) --tool $$tool --print-limit 20 --error-exitcode 1 $< $(GN_ARGS) || gn_status=1; \
 	done; exit $$gn_status
+sanitize-layer-norm: $(BIN_DIR)/layer_norm_test
+	@ln_status=0; \
+	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --print-limit 20 --error-exitcode 1 $< $(LN_ARGS) || ln_status=1; \
+	for tool in initcheck racecheck synccheck; do \
+	  $(COMPUTE_SANITIZER) --tool $$tool --print-limit 20 --error-exitcode 1 $< $(LN_ARGS) || ln_status=1; \
+	done; exit $$ln_status
 sanitize-max-pooling-2d: $(BIN_DIR)/max_pooling_2d_test
 	@pool_status=0; \
 	$(COMPUTE_SANITIZER) --tool memcheck --leak-check full --print-limit 20 --error-exitcode 1 $< $(POOL_ARGS) || pool_status=1; \
@@ -576,6 +588,7 @@ sanitize: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(MAKE) sanitize-batch-norm
 	$(MAKE) sanitize-rms-norm
 	$(MAKE) sanitize-group-norm
+	$(MAKE) sanitize-layer-norm
 	$(MAKE) sanitize-max-pooling-2d
 	$(MAKE) sanitize-count
 	$(MAKE) sanitize-count3d
@@ -594,7 +607,7 @@ help:
 	@echo 'all             Build tests and benchmarks (no GPU needed)'
 	@echo 'compile-kernels Compile every src/*.cu independently'
 	@echo 'check           Run small GPU correctness checks'
-	@echo 'check-full      Also run large MSE, top-k, INT8 matmul, Monte Carlo, matrix power, nearest-neighbor, batch-norm, RMS-norm, group-norm, max-pooling, count and subarray-sum regressions'
+	@echo 'check-full      Also run large MSE, top-k, INT8 matmul, Monte Carlo, matrix power, nearest-neighbor, batch-norm, RMS-norm, group-norm, layer-norm, max-pooling, count and subarray-sum regressions'
 	@echo 'sanitize        Run selected memory/synchronization checks'
 	@echo 'run-<operator>  Run one test/benchmark with default arguments'
 	@echo 'run-mm-int8     Check INT8 quantization; MM_INT8_ARGS=--large checks 8192x4096x2048'
@@ -614,6 +627,9 @@ help:
 	@echo 'run-group-norm Check NCHW group normalization; GN_ARGS="--case NAME" isolates a case'
 	@echo '               GN_ARGS=--large checks challenge/spatial sizes; --list-cases lists cases'
 	@echo 'sanitize-group-norm Run group-norm memcheck, then initcheck/racecheck/synccheck if it passes; accepts GN_ARGS'
+	@echo 'run-layer-norm Check per-row layer normalization; LN_ARGS="--case NAME" isolates a case'
+	@echo '               LN_ARGS=--large checks N/C=65536/512 and 1024/4096; --list-cases lists cases'
+	@echo 'sanitize-layer-norm Run layer-norm memcheck/initcheck/racecheck/synccheck; accepts LN_ARGS'
 	@echo 'run-max-pooling-2d Check NCHW max pooling; POOL_ARGS="--case NAME" isolates a case'
 	@echo '               POOL_ARGS=--large checks N=4,k=3,s=2; --list-cases lists cases'
 	@echo 'sanitize-max-pooling-2d Run max-pooling memory/leak/initialization checks; accepts POOL_ARGS'

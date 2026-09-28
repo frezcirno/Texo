@@ -28,8 +28,9 @@ N=5000/10000,C=1024, NCHW max pooling with N=4,k=3,s=2 at large spatial
 and channel dimensions, integer occurrence counts with 16,777,217/100M
 elements, 3D counts at 500^3/1000^3, subarray sums over 100M-element arrays,
 2D subarray sums over 10000x10000 matrices, 3D subarray sums over 500^3 tensors,
-RMS normalization with N=99999/100000, and group normalization at
-N/C/H/W/G=8/512/64/64/32 and 2/32/128/128/8.
+RMS normalization with N=99999/100000, group normalization at
+N/C/H/W/G=8/512/64/64/32 and 2/32/128/128/8, and layer normalization at
+N/C=65536/512 and 1024/4096.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -349,6 +350,58 @@ compile, with an unused `c_end` warning; only sm_80 was run on hardware.
 No physical T4 run or online submission is implied. Logs for this revision
 are in `build/sm_80/group_norm-validated-{quick,large,sanitize}.log`.
 
+The 61-case `layer_norm_test` quick suite validates
+[Layer Normalization](https://leetgpu.com/challenges/layer-normalization)
+using independent CPU FP64 Welford statistics for every row of `input[N,C]`.
+Population variance divides by C; eps=1e-5 is added inside the square root,
+and `weight[C]`/`bias[C]` apply per feature. Local tolerances are atol=1e-4
+and rtol=1e-4, not a claim about the platform's hidden comparison settings.
+The published example uses the formula including eps, rather than the rounded
+displayed answer.
+
+Coverage includes C=1, feature counts around warp/block boundaries through
+C=4096, row counts around 32/256 and N=65536, zero/constant/decimal rows,
+independent and identical rows, per-feature affine parameters, population
+variance, mean subtraction, epsilon-dominated variance, large offsets with
+small variance, active last rows/columns and input extrema. Input/weight/bias/
+output offsets are checked individually and together. All dimensions and
+values follow the statement; empty dimensions, nonfinite inputs, alternative
+eps values, zero/negative weights and aliasing are outside this test contract.
+
+Each case runs twice on the same device buffers. The second call changes the
+row statistics and affine parameters; `repeat-identical` repeats the original
+inputs and parameters. Checks cover every output value, bitwise preservation
+of input/weight/bias, NaN/finite output poison and output guards, without input
+or parameter suffix padding. Run `make run-layer-norm` (also in `make check`),
+select one case with `LN_ARGS="--case example"`, or list cases without CUDA
+initialization using `LN_ARGS=--list-cases`. `LN_ARGS=--large` runs separate
+N/C=65536/512 and 1024/4096 cases, also in `make check-full`; these validate
+correctness and do not measure performance. `--large` can be combined with
+`--case NAME` or `--list-cases`. `make sanitize-layer-norm` runs memcheck with
+leak checking, initcheck, racecheck and synccheck, accepts `LN_ARGS`, and is
+included in `make sanitize`. It runs all four tools and returns nonzero for
+any functional or sanitizer failure.
+
+Validated on 2026-09-28 on A800 GPU 3: 60/61 quick cases and both large cases
+pass. `constant-decimal-4096` fails: for a row filled with FP32 99.9, the
+mathematically normalized value is zero, so the result should equal bias.
+The current FP32 mean accumulation drifts; with eps=1e-5 that error produces
+up to about 0.0483 absolute output error. For example, the first call returns
+0.99758738 instead of bias=1 at `(row,col)=(1,1)`. Both calls fail this case.
+The test retains the failing regression and does not relax its tolerance.
+
+All four sanitizer tools ran the complete quick suite. Memcheck, initcheck
+and synccheck report zero errors; racecheck reports zero hazards, and memcheck
+reports zero leaked allocations. Each run still fails the numerical regression,
+so `make sanitize-layer-norm` correctly exits nonzero despite clean sanitizer
+reports.
+
+The large cases passed without sanitizer instrumentation, with a maximum
+absolute error of about 2.94e-6. Both sm_80 and sm_75 compile; only sm_80 was
+run on hardware. This test addition did not change the operator implementation.
+No physical T4 run or online submission is implied. Logs are in
+`build/sm_80/layer_norm-{quick,large,sanitize}.log`.
+
 The 64-case `max_pooling_2d_test` quick suite covers both
 [2D Max Pooling examples](https://leetgpu.com/challenges/2d-max-pooling), scalar
 and identity windows, rectangular/single-row/single-column inputs, dimensions
@@ -619,7 +672,7 @@ sm_80 and sm_75 compile; only sm_80 was run on hardware. This verification
 did not change the operator implementation. Current logs are in
 `build/sm_80/slice_sum3d-{quick,large,sanitize}.log`.
 
-`sanitize` runs memory checks on group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
+`sanitize` runs memory checks on layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on subarray sums, counting, the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

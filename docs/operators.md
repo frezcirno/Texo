@@ -141,6 +141,18 @@ before consuming outputs on the CPU.
   A group with one element or constant values mathematically outputs beta.
   Run `make run-group-norm`; `GN_ARGS=--large` checks the challenge performance
   shape and H/W=128. See [testing notes](testing.md) for validation results.
+- `layer_norm.cu`: Layer Normalization of contiguous FP32 `input[N,C]`,
+  writing a separate overwritten `output[N,C]`. Each row independently uses
+  its C features to compute the mean and population variance (divide by C).
+  Apply `weight[c]*(input-mean)/sqrt(variance+eps)+bias[c]`; the per-feature
+  weight/bias arrays are shared across rows. The
+  [LeetGPU contract](https://leetgpu.com/challenges/layer-normalization) specifies
+  N in [1,65536], C in [1,4096], input in [-100,100], weight in [0.1,10],
+  bias in [-10,10], and eps=1e-5. C=1 and constant rows mathematically yield
+  bias. Run `make run-layer-norm`; `LN_ARGS=--large` checks N/C=65536/512
+  (the stated performance shape) and 1024/4096 for correctness. The current
+  implementation fails the long constant-decimal regression at the local
+  numerical tolerance; see [testing notes](testing.md) for details.
 - `max_pooling_2d.cu`: FP32 max pooling from contiguous `input[N,C,H,W]` to
   separate overwritten `output[N,C,H_out,W_out]` in NCHW order. Tests use
   `H_out = floor((H + 2*padding - kernel_size) / stride) + 1`, likewise for W,
