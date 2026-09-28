@@ -28,7 +28,8 @@ N=5000/10000,C=1024, NCHW max pooling with N=4,k=3,s=2 at large spatial
 and channel dimensions, integer occurrence counts with 16,777,217/100M
 elements, 3D counts at 500^3/1000^3, subarray sums over 100M-element arrays,
 2D subarray sums over 10000x10000 matrices, 3D subarray sums over 500^3 tensors,
-and RMS normalization with N=99999/100000.
+RMS normalization with N=99999/100000, and group normalization at
+N/C/H/W/G=8/512/64/64/32 and 2/32/128/128/8.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -302,6 +303,56 @@ Both sm_80 and sm_75 builds pass; only sm_80 was run on hardware. No physical
 T4 runtime or online submission is implied. Logs for this revision are in
 `build/sm_80/rms_norm-validated-{quick,large,sanitize}.log`.
 
+The 60-case `group_norm_test` quick suite validates the
+[Group Normalization](https://leetgpu.com/challenges/group-normalization)
+formula using independent CPU FP64 Welford statistics for each `(batch, group)`.
+Each contiguous group spans `M=(C/G)*H*W` values; population variance divides
+by M and eps=1e-5 is added inside the square root. The affine parameters vary
+by channel. Local tolerances are atol=1e-4 and rtol=1e-4. The two examples use
+the formula, including eps, rather than their rounded displayed answers.
+
+Coverage includes scalar/single-element groups, group sizes around warp/block
+boundaries through M=1025, non-power-of-two group counts, G=1 and G=C,
+N=32/C=1024/G=1024, rectangular spatial tails, single rows/columns, zero and
+constant groups/channels, independent batches and groups, per-channel affine
+parameters, population variance, epsilon-dominated variance, large offsets
+with small variance, and active last groups/elements. X/gamma/beta/Y offsets
+are checked separately and together. All dimensions, inputs and parameters
+follow the statement; invalid G/divisibility, empty dimensions, nonfinite
+inputs, other eps values and aliasing are not tested.
+
+Every case runs twice on the same device buffers, changing each group's
+mean/variance and rotating/negating affine parameters for the second call.
+The harness checks all output elements, bitwise preservation of X/gamma/beta,
+NaN/finite output poison and output guards, with no input/parameter suffix
+padding. Run `make run-group-norm` (also in `make check`), select a case with
+`GN_ARGS="--case example-1"`, or list names without CUDA initialization using
+`GN_ARGS=--list-cases`. `GN_ARGS=--large` runs the two separate cases at
+N/C/H/W/G=8/512/64/64/32 (the stated performance shape) and 2/32/128/128/8,
+also in `make check-full`; these are correctness checks, not timings.
+`--large` can be combined with `--case NAME` or `--list-cases`.
+`make sanitize-group-norm` runs memcheck with leak checking first, then
+initcheck/racecheck/synccheck only if that run succeeds. It accepts `GN_ARGS`,
+is included in `make sanitize`, and returns nonzero on any failure.
+
+Revalidated on 2026-09-28 on A800 GPU 3 after deriving n/group from blockIdx.x
+and setting work to `(C/G)*H*W`: both sm_80 and sm_75 compile, with an unused
+`c_end` warning; only sm_80 was run on hardware. The quick suite still reports
+1/60 cases passing under memcheck (only `scalar`), but memcheck now reports
+zero access errors and zero leaked allocations. The diagnostic command retained
+`--destroy-on-device-error kernel`; no access errors were reported in this run.
+The first output in `example-1` is about -0.353553 instead of -0.999995, and
+many outputs retain the poison value because they are never written.
+
+Three implementation issues remain: the launch uses `ceil(N*G/256)` blocks
+although one block handles each `(batch, group)`; the group-local channel
+index still divides by G and takes modulo N instead of advancing once per
+H*W spatial elements; both mean and variance still divide by N rather than
+the group's element count. The two large cases and full-suite
+initcheck/racecheck/synccheck remain deferred pending these correctness fixes.
+No physical T4 run or online submission is claimed. This revision's log is
+`build/sm_80/group_norm-recheck3-memcheck.log`.
+
 The 64-case `max_pooling_2d_test` quick suite covers both
 [2D Max Pooling examples](https://leetgpu.com/challenges/2d-max-pooling), scalar
 and identity windows, rectangular/single-row/single-column inputs, dimensions
@@ -572,7 +623,7 @@ sm_80 and sm_75 compile; only sm_80 was run on hardware. This verification
 did not change the operator implementation. Current logs are in
 `build/sm_80/slice_sum3d-{quick,large,sanitize}.log`.
 
-`sanitize` runs memory checks on RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
+`sanitize` runs memory checks on group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on subarray sums, counting, the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

@@ -128,6 +128,19 @@ before consuming outputs on the CPU.
   Empty inputs, nonfinite values, aliasing and other eps values are not covered.
   Run `make run-rms-norm`; `RMS_ARGS=--large` checks N=99999/100000.
   See [testing notes](testing.md) for validation results and known limitations.
+- `group_norm.cu`: Group Normalization of contiguous FP32 `X[N,C,H,W]` in
+  NCHW order, writing a separate overwritten `Y` of the same shape. Each
+  `(batch, group)` has its own mean and population variance over
+  `M=(C/G)*H*W` elements in C/G consecutive channels; statistics never mix
+  batches. Apply `gamma[c]*(X-mean)/sqrt(variance+eps)+beta[c]` with per-channel
+  FP32 gamma/beta arrays. The
+  [LeetGPU contract](https://leetgpu.com/challenges/group-normalization) requires
+  N in [1,32], C in [1,1024], H/W in [1,128], `1 <= G <= C`, `C % G == 0`,
+  input in [-100,100], gamma in [0.1,10], beta in [-10,10], and eps=1e-5.
+  G=1 normalizes each sample over C/H/W; G=C normalizes each channel over H/W.
+  A group with one element or constant values mathematically outputs beta.
+  Run `make run-group-norm`; `GN_ARGS=--large` checks the challenge performance
+  shape and H/W=128. See [testing notes](testing.md) for current failures.
 - `max_pooling_2d.cu`: FP32 max pooling from contiguous `input[N,C,H,W]` to
   separate overwritten `output[N,C,H_out,W_out]` in NCHW order. Tests use
   `H_out = floor((H + 2*padding - kernel_size) / stride) + 1`, likewise for W,
