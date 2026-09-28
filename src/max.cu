@@ -28,6 +28,19 @@ template <int BLOCK_SIZE, typename T> __device__ inline T block_max(T val) {
 
 template <typename T> __device__ T atomic_max(T *addr, T val);
 
+template <> __device__ int atomic_max<int>(int *addr, int val) {
+  int *addr_as_int = reinterpret_cast<int *>(addr);
+  int old = *addr_as_int;
+  int assumed;
+  do {
+    assumed = old;
+    if (val <= assumed)
+      break;
+    old = atomicCAS(addr_as_int, assumed, val);
+  } while (assumed != old);
+  return old;
+}
+
 template <> __device__ float atomic_max<float>(float *addr, float val) {
   int *addr_as_int = reinterpret_cast<int *>(addr);
   int old = *addr_as_int;

@@ -30,7 +30,8 @@ elements, 3D counts at 500^3/1000^3, subarray sums over 100M-element arrays,
 2D subarray sums over 10000x10000 matrices, 3D subarray sums over 500^3 tensors,
 RMS normalization with N=99999/100000, group normalization at
 N/C/H/W/G=8/512/64/64/32 and 2/32/128/128/8, and layer normalization at
-N/C=65536/512 and 1024/4096.
+N/C=65536/512 and 1024/4096. Maximum fixed-length window sums also run at
+N=50000 with window_size=1/257/49999/50000.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -672,7 +673,70 @@ sm_80 and sm_75 compile; only sm_80 was run on hardware. This verification
 did not change the operator implementation. Current logs are in
 `build/sm_80/slice_sum3d-{quick,large,sanitize}.log`.
 
-`sanitize` runs memory checks on layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
+The 80-case `max_subarray_sum_test` quick suite follows the
+[Max Subarray Sum](https://leetgpu.com/challenges/max-subarray-sum) contract:
+maximize the sum of a contiguous window with **exactly window_size elements**.
+The CPU oracle uses an INT64 sliding window and exact INT32 comparisons.
+It starts with a complete window, so all-negative inputs produce a negative
+answer rather than selecting an empty subarray. Input values remain in [-10,10],
+N in [1,50000], and window_size in [1,N]; every sum fits INT32.
+
+Cases cover both published examples, positive/negative/zero singletons,
+all-negative/zero/positive arrays, alternating signs, the same array with
+different window sizes, array/window dimensions around warp/block boundaries,
+unique winning windows at the first/interior/last start, windows spanning
+warp/block boundaries, deterministic mixed inputs and separate/combined
+input/output offsets. Inputs have no suffix padding; checks include bitwise
+input preservation and guards around the single output. Empty windows, invalid
+sizes, values outside the stated range and input/output aliasing are not tested.
+
+Baseline cases initialize output to INT_MIN to isolate window/indexing errors.
+Dedicated overwrite cases start with INT_MAX, then INT_MIN. Reuse cases make
+three calls without clearing output; the first two use identical inputs, and
+the final call reverses and negates input. Other cases make two calls with
+that same final-call transformation. Two cases also change window_size on
+the same allocations; `consecutive-blocks` forces the correct result to fall
+from 2570 to -5130. Thus a reduction must overwrite a previous larger result.
+
+Run `make run-max-subarray-sum` (also in `make check`), select a case with
+`MAX_SUBARRAY_SUM_ARGS="--case example-1"`, or list names without initializing
+CUDA using `MAX_SUBARRAY_SUM_ARGS=--list-cases`. `MAX_SUBARRAY_SUM_ARGS=--large`
+runs four separate N=50000 cases with window_size=1/257/49999/50000, also in
+`make check-full`. The last two use constant arrays with known first-call
+answers -499990 and 500000. Large inputs are generated lazily; listing cases
+does not allocate them. `--large` can be combined with `--case NAME` or
+`--list-cases`. These are correctness checks, not performance measurements.
+`make sanitize-max-subarray-sum` runs memcheck with leak checking, initcheck,
+racecheck and synccheck, accepts `MAX_SUBARRAY_SUM_ARGS`, and is included in
+`make sanitize`. It runs all four tools and propagates functional failures
+as well as sanitizer errors.
+
+Validated on 2026-09-28 on A800 GPU 3 after replacing the prefix-minimum
+difference with fixed-length window sums: 76/80 quick cases and all four
+large cases pass. Both sm_80 and sm_75 compile; only sm_80 was run on hardware. An additional
+CPU-only audit compares the sliding-window oracle against independent direct
+window enumeration for every case and every call (162 quick and 8 large),
+including the known expected answers. That audit passes; it is not a GPU
+operator correctness result.
+
+All four sanitizer tools ran the complete quick suite: memcheck, initcheck
+and synccheck report zero errors, racecheck reports zero hazards, and memcheck
+reports zero leaked allocations. Each run still fails the numerical checks,
+so the sanitizer target correctly returns nonzero. Large cases were checked
+without sanitizer instrumentation. No physical T4 run or online submission
+is implied.
+
+The remaining failures are `overwrite-positive`, `overwrite-negative`,
+`consecutive-calls` and `consecutive-blocks`. Output is not reset before the
+atomic maximum: an output initialized to INT_MAX remains INT_MAX; repeated
+calls retain 7 instead of writing -7, or 2570 instead of -5130. The ordinary
+and large cases initialize output to INT_MIN before each call, so their passes
+confirm window arithmetic but do not establish correct output initialization.
+This verification preserves the failing regressions and does not change the
+operator implementation. Runtime/build logs are in
+`build/sm_80/max_subarray_sum-{build,quick,large,sanitize}.log`.
+
+`sanitize` runs memory checks on maximum fixed-length window sums, layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on subarray sums, counting, the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

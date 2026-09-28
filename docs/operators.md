@@ -71,6 +71,18 @@ before consuming outputs on the CPU.
   See [testing notes](testing.md) for validation and large-test memory use.
 - `max.cu`: float maximum; vectorized input requires 16-byte alignment. The empty
   reduction produces negative infinity. NaN behavior is not specified by the tests.
+- `max_subarray_sum.cu`: maximum sum over all contiguous windows of **exactly**
+  `window_size` INT32 elements, writing one result to separate `output[1]`.
+  The [LeetGPU contract](https://leetgpu.com/challenges/max-subarray-sum) specifies
+  N in [1,50000], input values in [-10,10], and `1 <= window_size <= N`.
+  Windows are nonempty; the maximum may be negative, and every result fits
+  INT32. This is a fixed-length window problem. Run `make run-max-subarray-sum`;
+  `MAX_SUBARRAY_SUM_ARGS=--large` checks N=50000 with four window sizes.
+  Tests use independent INT64 CPU window sums, exact comparisons, input
+  preservation, output guards and explicit overwrite/reuse checks. The current
+  fixed-window calculation passes, but output is not reset before the atomic
+  maximum, so overwrite/reuse cases still fail; see
+  [testing notes](testing.md) for validation results.
 - `top_k.cu`: float input `[N]` to descending output `[k]`, preserving duplicates
   and input storage; `1 <= k <= N <= 100000000`, no NaNs. Four byte-wise radix
   selection passes find the kth value, then a fifth pass collects larger values.
