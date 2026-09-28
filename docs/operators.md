@@ -116,6 +116,18 @@ before consuming outputs on the CPU.
   specifies N in [1,10000], C in [1,1024], input in [-100,100], gamma in [0.1,10],
   beta in [-10,10], and eps=1e-5. N=1 and constant channels mathematically yield
   beta. Run `make run-batch-norm`; `BN_ARGS=--large` checks N=5000/10000,C=1024.
+- `rms_norm.cu`: RMS normalization of a contiguous FP32 `input[N]` vector,
+  writing a separate overwritten `output[N]`. The scalar gamma/beta parameters
+  are passed by value. The intended formula is
+  `gamma * input[i] / sqrt(sum(input[j]^2)/N + eps) + beta`, reducing over the
+  whole vector without subtracting its mean. The
+  [LeetGPU contract](https://leetgpu.com/challenges/rms-normalization) specifies
+  N in [1,100000], input in [-100,100], gamma in [0.1,10], beta in [-10,10],
+  and eps=1e-5. The current float4 loads require 16-byte-aligned input; tests
+  preserve that alignment and cover scalar tails and unaligned output pointers.
+  Empty inputs, nonfinite values, aliasing and other eps values are not covered.
+  Run `make run-rms-norm`; `RMS_ARGS=--large` checks N=99999/100000.
+  See [testing notes](testing.md) for validation results and known limitations.
 - `max_pooling_2d.cu`: FP32 max pooling from contiguous `input[N,C,H,W]` to
   separate overwritten `output[N,C,H_out,W_out]` in NCHW order. Tests use
   `H_out = floor((H + 2*padding - kernel_size) / stride) + 1`, likewise for W,

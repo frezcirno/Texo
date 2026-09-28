@@ -27,7 +27,8 @@ nearest-neighbor cases with 10,000/100,000 points, batch normalization at
 N=5000/10000,C=1024, NCHW max pooling with N=4,k=3,s=2 at large spatial
 and channel dimensions, integer occurrence counts with 16,777,217/100M
 elements, 3D counts at 500^3/1000^3, subarray sums over 100M-element arrays,
-2D subarray sums over 10000x10000 matrices, and 3D subarray sums over 500^3 tensors.
+2D subarray sums over 10000x10000 matrices, 3D subarray sums over 500^3 tensors,
+and RMS normalization with N=99999/100000.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -257,6 +258,49 @@ errors and memcheck reports zero leaked allocations, but the sanitizer target
 correctly returns failure for the numerical mismatch. Both sm_80 and sm_75
 compile; only sm_80 was run on hardware. The operator implementation was left
 unchanged while adding these tests.
+
+The 55-case `rms_norm_test` quick suite checks the
+[RMS Normalization](https://leetgpu.com/challenges/rms-normalization) formula
+against an independent CPU FP64 sum of squares over the entire 1D vector.
+It divides by N and adds eps=1e-5 inside the square root, then applies scalar
+gamma/beta without subtracting the mean. Local tolerances are atol=1e-5 and
+rtol=1e-5. Both examples use the formula instead of their rounded displayed
+outputs. Other cases cover scalar/float4/warp/block boundaries, every float4
+component, one-to-three-element tails, many blocks, zeros, positive/negative
+constants, mixed signs, epsilon-dominated inputs, different magnitudes across
+blocks, a lone last element, affine parameter bounds and pointer offsets.
+
+Each case makes two calls on the same input/output allocations, checking all
+outputs, bytewise input preservation, output guards and NaN/finite output
+poison. The second call reverses and rescales input and changes gamma/beta;
+`repeat-identical` instead repeats identical inputs and parameters. Input
+allocations have no suffix padding and remain 16-byte aligned, including the
+four-float offset case; output offsets of one, two and three floats are tested.
+Inputs and parameters remain in the challenge ranges. Arbitrarily unaligned
+inputs, zero/negative gamma, alternative eps values, empty inputs, nonfinite
+values and in-place operation are outside this test contract.
+
+Run `make run-rms-norm` (also in `make check`), select a case with
+`RMS_ARGS="--case example-1"`, or list names without initializing CUDA using
+`RMS_ARGS=--list-cases`. `RMS_ARGS=--large` runs three separate cases at
+N=99999/100000, including mixed magnitudes, also in `make check-full`.
+`--large` can be combined with `--case NAME` or `--list-cases`. These are
+correctness checks, not timings. `make sanitize-rms-norm` runs memcheck with
+leak checks, initcheck, racecheck and synccheck; it accepts `RMS_ARGS`, is
+included in `make sanitize`, and propagates functional and sanitizer failures.
+
+Validated on 2026-09-28 on A800 GPU 3 after adding per-call initialization of
+the temporary `rms` scalar before the atomic reduction: all 55 quick cases and
+all three large cases pass, including repeated identical inputs and changed
+inputs/parameters. Memcheck, initcheck and synccheck each report zero errors;
+racecheck reports zero hazards, and memcheck reports zero leaked allocations.
+All four sanitizer tools ran the complete quick suite. Large cases were
+checked normally, without sanitizer instrumentation; the maximum absolute
+error among those cases in this run was about 6.36e-6.
+
+Both sm_80 and sm_75 builds pass; only sm_80 was run on hardware. No physical
+T4 runtime or online submission is implied. Logs for this revision are in
+`build/sm_80/rms_norm-validated-{quick,large,sanitize}.log`.
 
 The 64-case `max_pooling_2d_test` quick suite covers both
 [2D Max Pooling examples](https://leetgpu.com/challenges/2d-max-pooling), scalar
@@ -528,7 +572,7 @@ sm_80 and sm_75 compile; only sm_80 was run on hardware. This verification
 did not change the operator implementation. Current logs are in
 `build/sm_80/slice_sum3d-{quick,large,sanitize}.log`.
 
-`sanitize` runs memory checks on 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
+`sanitize` runs memory checks on RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on subarray sums, counting, the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

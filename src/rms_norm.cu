@@ -1,5 +1,7 @@
 #include <cuda_runtime.h>
 
+template <typename T> __device__ T pow2(T x) { return x * x; }
+
 template <typename T> __device__ inline T warp_sum(T val) {
 #pragma unroll
   for (int off = 16; off > 0; off >>= 1) {
@@ -38,7 +40,7 @@ template <> struct Vector4<double> {
 
 template <int BLOCK_SIZE, typename T>
 __global__ void sum_kernel(const T *__restrict__ input, T *__restrict__ output,
-                           int N) {
+                           int N, float eps) {
   using T4 = typename Vector4<T>::type;
 
   int tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
@@ -50,11 +52,11 @@ __global__ void sum_kernel(const T *__restrict__ input, T *__restrict__ output,
   const auto *input4 = reinterpret_cast<const T4 *>(input);
   for (int i = tid; i < N4; i += stride) {
     T4 v = input4[i];
-    sum += v.x + v.y + v.z + v.w;
+    sum += pow2(v.x) + pow2(v.y) + pow2(v.z) + pow2(v.w);
   }
   int tail_base = N4 * 4;
   if (tail_base + tid < N) {
-    sum += input[tail_base + tid];
+    sum += pow2(input[tail_base + tid]);
   }
 
   sum = block_sum<BLOCK_SIZE>(sum);
@@ -63,13 +65,33 @@ __global__ void sum_kernel(const T *__restrict__ input, T *__restrict__ output,
   }
 }
 
-extern "C" void solve(const float *input, float *output, int N) {
-  cudaMemsetAsync(output, 0, sizeof(float));
-  if (N <= 0)
+template <typename T>
+__global__ void scale_kernel(const T *__restrict__ input, // (N,)
+                             T *__restrict__ rms,         // (1,)
+                             float gamma, float beta,
+                             T *__restrict__ output, // (N,)
+                             int N, float eps) {
+  const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= N)
     return;
-  constexpr int BLOCK_SIZE = 256;
-  // Few hundred blocks: enough to fill A800's 108 SMs, few enough to keep
-  // atomicAdd contention on the single output negligible.
-  constexpr int GRID_SIZE = 432;
-  sum_kernel<BLOCK_SIZE><<<GRID_SIZE, BLOCK_SIZE>>>(input, output, N);
+  output[tid] = gamma * input[tid] / sqrt(*rms / N + eps) + beta;
+}
+
+// input, gamma, beta, output are device pointers
+extern "C" void solve(const float *input, // (N,)
+                      float gamma, float beta,
+                      float *output, // (N,)
+                      int N, float eps) {
+  float *rms;
+  cudaMalloc(&rms, sizeof(float));
+  cudaMemset(rms, 0, sizeof(float));
+
+  // rms = sum(input^2)
+  sum_kernel<256><<<(N + 255) / 256, 256>>>(input, rms, N, eps);
+
+  // y = gamma * x / sqrt(rms/N + eps) + beta
+  scale_kernel<<<(N + 255) / 256, 256>>>(input, rms, gamma, beta, output, N,
+                                         eps);
+
+  cudaFree(rms);
 }
