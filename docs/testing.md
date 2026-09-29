@@ -34,6 +34,8 @@ N/C=65536/512 and 1024/4096. Maximum fixed-length window sums also run at
 N=50000 with window_size=1/257/49999/50000. FP16 batched multiplication adds
 B/M/N/K=1/1024/1024/1024, 3/1023/1023/1023 and 128/256/256/256. ALiBi adds
 M/N/d=2048/2048/1024, 2047/2048/33 and 2048/2047/65.
+FP32 and FP16 dot products each add N=100000000 binary/decimal constant cases
+and an N=99999999 final-element regression.
 
 The newer elementwise, matrix addition/copy, reversal, interleave, 1D convolution,
 hash and RGB-to-grayscale tests also run in `make check`. Each operator has its own
@@ -198,6 +200,92 @@ hazards, and leak checking found zero leaked allocations. Large cases ran
 without sanitizer instrumentation. Both sm_80 and sm_75 builds passed; no
 physical T4 run or online submission was performed. Logs are in
 `build/sm_80/alibi-{build,quick,large,sanitize}.log`.
+
+`dot_test` and `dot_fp16_test` compile the shared `tests/dot.cpp` reference harness
+with `DOT_FP32` and `DOT_FP16`, respectively, and link their own standalone
+operator. Both [FP32](https://leetgpu.com/challenges/dot-product) and
+[FP16](https://leetgpu.com/challenges/fp16-dot-product) contracts require writing
+the current dot product to one scalar output, with N in [1,100000000].
+
+There are 66 FP32 and 69 FP16 quick cases: both published examples, lengths
+1..9 and boundaries around 32/64/128/256/512/1024/4096/65536, zero operands,
+negative products, even/odd alternating signs, sum of squares, final-element
+impulses, decimal inputs, and separate/combined input/output offsets. Input
+offsets preserve 16-byte alignment (sufficient for both float4 and half2);
+input allocations have no suffix padding. The output scalar also runs at an
+element offset, with prefix/suffix guards. Every call checks both input buffers
+bitwise and all output guards.
+
+Normal cases clear output before each of two calls, with A negated on the
+second call. Four dedicated overwrite checks use nonzero finite values, NaN or
+infinity as old output, including a zero-product case. Two reuse checks keep
+the output across three calls: identical inputs on the first two, then negated
+A. FP32-intermediate regressions include many small increments, cancellation
+of products beyond the FP16 range and cross-block cancellation. FP16 additionally
+checks ties-to-even in both rounding directions and the smallest positive
+subnormal; the second call covers their negative counterparts. Nonfinite inputs,
+empty sizes, misaligned vector loads and input/output aliasing are outside scope.
+
+References accumulate the actual stored inputs in CPU double, then round once
+to the result type. Binary-data cases use exactly representable FP32 products
+and partial sums and require exact numerical output equality. Decimal cases
+allow atol=1e-5 plus rtol=2e-5 for FP32, or atol=2e-5 plus rtol=1e-3 for FP16,
+against the rounded reference. These are local accuracy thresholds; the public
+challenge pages do not specify their grading tolerances. A precision regression
+failure therefore does not prove that the platform will reject that case.
+
+Each `--large` suite has three cases: N=100000000 with A=B=1/1024; N=99999999
+with only the final A element set to 123 and B=1; and N=100000000 with A=1/1024
+and B=0.1 (quantized to the input type). Analytic references use the stored scalar
+values and size, with small counterparts checked against full CPU dot products.
+Both signs are tested, with finite output expectations. The decimal case records
+the accumulation error seen when many blocks atomically add to one FP32 scalar.
+These are correctness/accuracy checks, not timing benchmarks.
+
+```bash
+CUDA_VISIBLE_DEVICES=3 make run-dot
+CUDA_VISIBLE_DEVICES=3 make run-dot-fp16
+CUDA_VISIBLE_DEVICES=3 make run-dot DOT_ARGS=--large
+CUDA_VISIBLE_DEVICES=3 make run-dot-fp16 DOT_FP16_ARGS=--large
+CUDA_VISIBLE_DEVICES=3 make run-dot DOT_ARGS="--case consecutive-blocks"
+CUDA_VISIBLE_DEVICES=3 make run-dot-fp16 DOT_FP16_ARGS="--large --case maximum-decimal"
+make run-dot DOT_ARGS=--list-cases
+make run-dot-fp16 DOT_FP16_ARGS=--list-cases
+CUDA_VISIBLE_DEVICES=3 make sanitize-dot
+CUDA_VISIBLE_DEVICES=3 make sanitize-dot-fp16
+```
+
+Quick cases run in `make check`, and large cases in `make check-full`. Each
+dedicated sanitizer target runs memcheck with leak checking, initcheck, racecheck
+and synccheck on the quick suite, accepts the corresponding `DOT_ARGS` or
+`DOT_FP16_ARGS`, and participates in `make sanitize`. All tools run even when
+functional checks fail, and either functional or sanitizer failures produce
+nonzero exit status. Case listing does not initialize CUDA.
+
+Validated on 2026-09-28 with NVIDIA A800 80GB PCIe (GPU 3), CUDA 12.6,
+`-O3 -std=c++14 -arch=sm_80`:
+
+| Executable | Quick cases | Large cases |
+| --- | --- | --- |
+| `dot_test` | 60/66 passed | 2/3 passed |
+| `dot_fp16_test` | 69/69 passed | 2/3 passed |
+
+FP32's six quick failures are the four `overwrite-*` and two `consecutive-*`
+cases: its wrapper does not reset the output before atomic addition. Both large
+suites pass `maximum-binary` and `maximum-odd-tail`, but fail `maximum-decimal`
+under the local tolerances above. The positive FP32 result was 9765.09765625
+versus a rounded reference of 9765.625; FP16 produced 9744 versus 9760
+(unrounded FP64 reference 9763.24081421). The negative calls reproduced the
+same absolute errors. These accuracy failures are retained as regressions.
+
+Each of the four sanitizer tools ran each complete quick suite. Memcheck,
+initcheck and synccheck reported zero errors, racecheck reported zero hazards,
+and leak checks found zero leaked allocations. `sanitize-dot` returns failure
+because it reproduces the six functional failures; `sanitize-dot-fp16` passes.
+Large cases were run without instrumentation. Both sm_80 and sm_75 builds passed;
+no physical T4 run or online submission was performed. Logs are in
+`build/sm_80/dot-{build,quick,large,sanitize}.log` and
+`build/sm_80/dot_fp16-{quick,large,sanitize}.log`.
 
 `mm_int8_test` has 56 default cases covering rectangular matrices, independent
 16x16 block boundaries, K=1/257/1025/2048, full signed INT8 inputs, independent input/output
@@ -854,7 +942,7 @@ This verification preserves the failing regressions and does not change the
 operator implementation. Runtime/build logs are in
 `build/sm_80/max_subarray_sum-{build,quick,large,sanitize}.log`.
 
-`sanitize` runs memory checks on ALiBi, maximum fixed-length window sums, layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, FP32/FP16 batched and INT8 matrix multiplication, blur,
+`sanitize` runs memory checks on FP32/FP16 dot products, ALiBi, maximum fixed-length window sums, layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, FP32/FP16 batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,
 and synchronization checks on subarray sums, counting, the two Cooperative Groups loss reductions and top-k. It is a
 selected set, not a sanitizer audit of every operator.

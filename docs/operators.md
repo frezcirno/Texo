@@ -91,9 +91,21 @@ before consuming outputs on the CPU.
   storage is constant for k <= 1024 and O(k) for larger outputs.
 - `scan.cu`: inclusive float scan, using recursive block sums. Compile-tested;
   no maintained runtime test target yet.
-- `dot.cu`: float dot product; both inputs require 16-byte alignment for `float4`
-  loads. Compile-tested only. Empty-input handling and very large integer indices
-  still need dedicated validation.
+- `dot.cu`: [FP32 dot product](https://leetgpu.com/challenges/dot-product),
+  A[N]/B[N] to one FP32 result, with N in [1,100000000]. Inputs require
+  16-byte alignment for `float4` loads. The intended contract overwrites result;
+  the current source uses atomic addition without clearing result, so nonzero
+  initial output and repeated calls fail. `make run-dot` checks the contract
+  with a CPU double reference; `DOT_ARGS=--large` checks maximum size, an odd
+  tail and decimal accumulation accuracy under documented local tolerances.
+- `dot_fp16.cu`: [FP16 dot product](https://leetgpu.com/challenges/fp16-dot-product),
+  half A[N]/B[N] to one half result, with the same positive size range.
+  Inputs require 4-byte alignment for `half2` loads. The source clears an FP32
+  accumulator, combines block sums in FP32 and converts the final value to half.
+  `make run-dot-fp16` checks tails, output overwrites, FP32 intermediates and FP16
+  rounding. `DOT_FP16_ARGS=--large` includes the 100M-element decimal precision
+  regression. Both operators share [tests/dot.cpp](../tests/dot.cpp); see
+  [testing notes](testing.md) for accuracy thresholds and current failures.
 - `histogram.cu`: integer bins, ignoring values outside `[0, num_bins)`; shared-memory
   or global atomic path depending on histogram size. Compile-tested only.
 
