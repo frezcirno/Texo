@@ -79,9 +79,10 @@ before consuming outputs on the CPU.
   INT32. This is a fixed-length window problem. Run `make run-max-subarray-sum`;
   `MAX_SUBARRAY_SUM_ARGS=--large` checks N=50000 with four window sizes.
   Tests use independent INT64 CPU window sums, exact comparisons, input
-  preservation, output guards and explicit overwrite/reuse checks. The current
-  fixed-window calculation passes, but output is not reset before the atomic
-  maximum, so overwrite/reuse cases still fail; see
+  preservation, output guards and explicit overwrite/reuse checks. All 80 quick
+  and four large cases pass after resetting output before the atomic maximum.
+  The official reference can incorrectly omit the first window; see the
+  [reference investigation](max_subarray_sum_reference.md) and
   [testing notes](testing.md) for validation results.
 - `top_k.cu`: float input `[N]` to descending output `[k]`, preserving duplicates
   and input storage; `1 <= k <= N <= 100000000`, no NaNs. Four byte-wise radix
@@ -323,11 +324,12 @@ before consuming outputs on the CPU.
   K[N,d], V[N,d] and output[M,d]. Softmax is row-wise; the signed relative
   position has no absolute value or causal mask, and the bias is not divided
   by sqrt(d). M/N are 1..2048, d is 1..1024 and alpha is a float in [-1,1].
-  Output is overwritten and inputs are preserved. `make run-alibi` checks
-  formulas, tails, offsets and repeated calls against a CPU double reference;
+  Output is overwritten and inputs are preserved. Softmax subtracts the maximum
+  of the complete biased scores; a row-constant bias shift also limits roundoff.
+  `make run-alibi` checks formulas, tails, offsets, repeated calls and exponent
+  overflow/underflow regressions against a CPU double reference;
   `ALIBI_ARGS=--large` exercises full dimensions with bounded scores and small
-  slopes. The previously deferred exponent overflow/underflow cases are outside
-  this suite's coverage; see [testing notes](testing.md).
+  slopes. See [testing notes](testing.md).
 
 ## Losses
 

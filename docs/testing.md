@@ -143,7 +143,7 @@ Logs: `build/sm_80/batched_mm_fp16-{quick,large,sanitize}.log`.
 
 `alibi_test` follows the [ALiBi challenge](https://leetgpu.com/challenges/attention-with-linear-biases):
 `output = softmax(Q*K^T/sqrt(d) + alpha*(i-j)) * V`, with row-wise softmax,
-FP32 inputs/output, M/N=1..2048, d=1..1024 and alpha in [-1,1]. Its 64 quick
+FP32 inputs/output, M/N=1..2048, d=1..1024 and alpha in [-1,1]. Its 72 quick
 cases cover both example inputs, singleton and rectangular matrices, independent
 16-thread tile boundaries, warp/256-thread reduction boundaries and tails,
 maximum dimensions on each axis, positive/negative/fractional/zero alpha,
@@ -162,7 +162,7 @@ Tests use that formula, not the erroneous printed values.
 
 Every case runs twice on the same input/output allocations, changing Q and V
 on the second call. Output starts at a nonzero value, then NaN, to check complete
-overwrites. Three cases instead retain output across three calls and change K
+overwrites. Four cases instead retain output across three calls and change K
 and the sign of alpha on the final call. All calls check every output, prefix
 and suffix guards, and bitwise preservation of Q/K/V. Input allocations have
 no suffix padding, so memcheck can detect tail overreads.
@@ -171,12 +171,14 @@ Three `--large` cases use separable Q/K/V with nonconstant outputs and analytic
 dot/value sums to avoid cubic CPU reference work. A small separable case checks
 that shortcut against the full FP64 reference on all three calls. The large
 cases exercise maximum M/N/d together plus independent M/N tails. They are
-correctness checks without performance timing. As agreed in the earlier review,
-exponent overflow/underflow regressions remain deferred: alpha endpoints are
-tested on small shapes, while full-dimension cases use alpha=0 or +/-1/4096 and
-bounded scores. Passing this suite does not resolve that known stability
-limitation. Empty sizes, input/output aliasing and nonfinite inputs are also
-outside the test scope.
+correctness checks without performance timing. Eight quick regressions cover
+exponent stability: the reported M=64, N=128, d=32, alpha=-0.76 failure shape
+with deterministic inputs in [-0.1,0.1] (the full reported tensors were not
+available), tall/wide/square shapes with alpha=+/-1, and competing dot-product
+and biased-score maxima that previously underflowed an entire row. The kernel
+subtracts each row's complete biased-score maximum before exponentiation. It
+also removes a row-constant bias offset before storing scores to limit roundoff.
+Empty sizes, input/output aliasing and nonfinite inputs are outside the test scope.
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 make run-alibi
@@ -192,14 +194,18 @@ target runs memcheck with leak checking, initcheck, racecheck and synccheck,
 accepts `ALIBI_ARGS` and propagates both functional and sanitizer failures.
 `--case` combines with `--large`; `--list-cases` does not initialize CUDA.
 
-Validated on 2026-09-28 with NVIDIA A800 80GB PCIe (GPU 3), CUDA 12.6,
-`-O3 -std=c++14 -arch=sm_80`: all 64 quick cases and all three large cases
+Validated on 2026-09-29 with NVIDIA A800 80GB PCIe (GPU 3), CUDA 12.6,
+`-O3 -std=c++14 -arch=sm_80`: all 72 quick cases and all three large cases
 passed. All four sanitizer tools ran the complete quick suite successfully:
 memcheck/initcheck/synccheck reported zero errors, racecheck reported zero
 hazards, and leak checking found zero leaked allocations. Large cases ran
-without sanitizer instrumentation. Both sm_80 and sm_75 builds passed; no
-physical T4 run or online submission was performed. Logs are in
-`build/sm_80/alibi-{build,quick,large,sanitize}.log`.
+without sanitizer instrumentation. This stability fix was built and run for
+sm_80; no physical A100/T4 run or online submission was performed. Logs are in
+`build/sm_80/alibi-stability-{quick,large,sanitize}.log`. The committed original
+kernel reproduces NaNs on `negative-alpha-regression`; the pre-fix working copy
+with sign-dependent offsets fails six of the eight new regressions. Those logs
+are `build/sm_80/alibi-stability-original.log` and
+`build/sm_80/alibi-before-stability-fix.log`.
 
 `dot_test` and `dot_fp16_test` compile the shared `tests/dot.cpp` reference harness
 with `DOT_FP32` and `DOT_FP16`, respectively, and link their own standalone
@@ -917,30 +923,23 @@ racecheck and synccheck, accepts `MAX_SUBARRAY_SUM_ARGS`, and is included in
 `make sanitize`. It runs all four tools and propagates functional failures
 as well as sanitizer errors.
 
-Validated on 2026-09-28 on A800 GPU 3 after replacing the prefix-minimum
-difference with fixed-length window sums: 76/80 quick cases and all four
-large cases pass. Both sm_80 and sm_75 compile; only sm_80 was run on hardware. An additional
-CPU-only audit compares the sliding-window oracle against independent direct
-window enumeration for every case and every call (162 quick and 8 large),
-including the known expected answers. That audit passes; it is not a GPU
-operator correctness result.
+Validated on 2026-09-29 on A800 GPU 3 after the user's output-reset fix:
+all 80 quick cases and all four large cases pass, including overwrite/reuse
+checks. Logs are `build/sm_80/max_subarray_sum-current-{quick,large}.log`.
+An additional N=50000/window_size=25000 stress probe passed 1000 random inputs,
+five calls each, with every prefix sum checked independently. Sampled memcheck
+and racecheck runs of that probe reported zero errors and zero hazards.
+No physical T4 run or online submission is implied.
 
-All four sanitizer tools ran the complete quick suite: memcheck, initcheck
-and synccheck report zero errors, racecheck reports zero hazards, and memcheck
-reports zero leaked allocations. Each run still fails the numerical checks,
-so the sanitizer target correctly returns nonzero. Large cases were checked
-without sanitizer instrumentation. No physical T4 run or online submission
-is implied.
-
-The remaining failures are `overwrite-positive`, `overwrite-negative`,
-`consecutive-calls` and `consecutive-blocks`. Output is not reset before the
-atomic maximum: an output initialized to INT_MAX remains INT_MAX; repeated
-calls retain 7 instead of writing -7, or 2570 instead of -5130. The ordinary
-and large cases initialize output to INT_MIN before each call, so their passes
-confirm window arithmetic but do not establish correct output initialization.
-This verification preserves the failing regressions and does not change the
-operator implementation. Runtime/build logs are in
-`build/sm_80/max_subarray_sum-{build,quick,large,sanitize}.log`.
+The official LeetGPU reference has a Tensor aliasing bug that discards the
+first window when there are multiple windows. The diagnostic
+`scripts/check_max_subarray_sum_reference.py` imports the cloned official
+challenge and compares its tests with an independent integer oracle and the
+CUDA implementation. All 12 CUDA cases pass; three directed cases expose the
+reference bug, including a constructed N=50000/window_size=25000 case with
+CUDA/oracle=285 and official reference=268. See the
+[reference investigation](max_subarray_sum_reference.md) for the pinned upstream
+commit, exact reproduction commands and limits of the platform comparison.
 
 `sanitize` runs memory checks on FP32/FP16 dot products, ALiBi, maximum fixed-length window sums, layer/group/RMS normalization, 1D/2D/3D subarray sums, 1D/3D integer counting, max pooling, batch normalization, nearest neighbor, GEMM, matrix power, FP32/FP16 batched and INT8 matrix multiplication, blur,
 categorical cross entropy, MSE, top-k, interleave, sigmoid and Monte Carlo integration,

@@ -222,6 +222,32 @@ static std::vector<Case> quick_cases() {
     cases.push_back({"features-" + std::to_string(d), 3, 7, d, 0.125f});
   for (float alpha : {-1.0f, -0.5f, -0.125f, 0.0f, 0.125f, 0.5f, 1.0f})
     cases.push_back({"alpha-" + std::to_string(alpha), 3, 7, 5, alpha});
+  // The reported submission failed with these dimensions, slope and input range.
+  // The full failing tensors were not available, so use deterministic inputs.
+  Case reported{"negative-alpha-regression", 64, 128, 32, -0.76f,
+                Pattern::Random, true};
+  prepare(reported);
+  for (auto* input : {&reported.q, &reported.k, &reported.v})
+    for (float& value : *input) value *= 0.2f;
+  reported.pattern = Pattern::Explicit;
+  cases.push_back(std::move(reported));
+  for (float alpha : {-1.0f, 1.0f}) {
+    const std::string suffix = alpha < 0 ? "negative" : "positive";
+    cases.push_back({"stable-tall-" + suffix, 256, 3, 5, alpha});
+    cases.push_back({"stable-wide-" + suffix, 3, 2048, 5, alpha});
+    cases.push_back({"stable-square-" + suffix, 256, 256, 5, alpha});
+  }
+  // The raw dot-product maximum is at the last key, but the biased maximum
+  // is at the first. Subtracting only the raw maximum underflows the whole row.
+  Case competing{"dot-bias-competing-maxima", 1, 257, 1, 1.0f, Pattern::Explicit};
+  competing.q = {1};
+  competing.k.assign(257, -128);
+  competing.k.front() = 0;
+  competing.k.back() = 128;
+  competing.v.assign(257, -3);
+  competing.v.front() = 2;
+  competing.known = {2};
+  cases.push_back(std::move(competing));
   cases.push_back({"rectangular-tails", 17, 33, 7, -0.5f});
   cases.push_back({"multiple-warps", 33, 513, 33, 1.0f / 128});
   cases.push_back({"zero-q-uniform", 17, 33, 7, 0, Pattern::ZeroQ});
@@ -254,8 +280,7 @@ static std::vector<Case> quick_cases() {
 }
 
 static std::vector<Case> large_cases() {
-  // Extreme exponent stability tests remain deferred, as agreed in the review.
-  // Small slopes exercise full dimensions without the deferred overflow cases.
+  // Maximum dimensions supplement the exponent stability cases in the quick suite.
   return {{"max-dimensions", 2048, 2048, 1024, 0, Pattern::Separable},
           {"large-positive-bias", 2047, 2048, 33, 1.0f / 4096, Pattern::Separable},
           {"large-negative-bias", 2048, 2047, 65, -1.0f / 4096, Pattern::Separable}};

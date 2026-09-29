@@ -65,7 +65,7 @@ template <int BLOCK_SIZE>
 __global__ void qkt_kernel(const float *__restrict__ Q, // (M, d)
                            const float *__restrict__ K, // (N, d)
                            float *__restrict__ qkt,     // (M, N)
-                           int M, int d, int N) {
+                           int M, int d, int N, float alpha) {
   int tidy = blockIdx.y * blockDim.y + threadIdx.y;
   int tidx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -76,7 +76,12 @@ __global__ void qkt_kernel(const float *__restrict__ Q, // (M, d)
   for (int i = 0; i < d; i++) {
     result += Q[tidy * d + i] * K[tidx * d + i];
   }
-  qkt[tidy * N + tidx] = result;
+  // Softmax ignores a row-constant shift. Center the bias at its largest key
+  // to avoid losing small dot-product differences to a large common offset.
+  int bias_origin = alpha < 0.0f ? N - 1 : 0;
+  // Reduce the complete (shifted) logits before exponentiating.
+  qkt[tidy * N + tidx] =
+      result * rsqrtf(static_cast<float>(d)) + alpha * (bias_origin - tidx);
 }
 
 template <int BLOCK_SIZE>
@@ -103,15 +108,12 @@ template <int BLOCK_SIZE>
 __global__ void exp_sum_kernel(float *__restrict__ qkt,           // (M, N)
                                const float *__restrict__ maximum, // (M,)
                                float *__restrict__ total,         // (M,)
-                               int d, int M, int N, float alpha) {
-  float inverse_sqrtd = rsqrtf(static_cast<float>(d));
-
+                               int N) {
   int m = blockIdx.x;
   float local_sum = 0.0f;
 
   for (int n = threadIdx.x; n < N; n += blockDim.x) {
-    float y = __expf((qkt[m * N + n] - maximum[m]) * inverse_sqrtd +
-                     alpha * (m - n - M + 1));
+    float y = __expf(qkt[m * N + n] - maximum[m]);
     qkt[m * N + n] = y;
     local_sum += y;
   }
@@ -172,17 +174,16 @@ extern "C" void solve(const float *__restrict__ Q, // (M, d)
   cudaMalloc(&maximum, 2 * M * sizeof(float));
   float *total = &maximum[M];
 
-  // qkt
+  // qkt = QK^T / sqrt(d) + ALiBi, up to a softmax-invariant row shift.
   qkt_kernel<BLOCK_SIZE><<<dim3((N + 15) / 16, (M + 15) / 16), dim3(16, 16)>>>(
-      Q, K, qkt, M, d, N);
+      Q, K, qkt, M, d, N, alpha);
 
   // maximum = max(qkt)
   max_kernel<BLOCK_SIZE><<<M, BLOCK_SIZE>>>(qkt, maximum, M, N);
 
-  // qkt = exp((qkt-maximum) / sqrt(d) + alpha * alibi)
+  // qkt = exp(qkt - maximum): the largest exponential in each row is 1.
   // total = sum(qkt)
-  exp_sum_kernel<BLOCK_SIZE>
-      <<<M, BLOCK_SIZE>>>(qkt, maximum, total, d, M, N, alpha);
+  exp_sum_kernel<BLOCK_SIZE><<<M, BLOCK_SIZE>>>(qkt, maximum, total, N);
 
   // qkt /= total
   normalize_kernel<BLOCK_SIZE><<<M, BLOCK_SIZE>>>(qkt, total, N);
