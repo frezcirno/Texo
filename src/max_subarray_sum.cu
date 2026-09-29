@@ -225,7 +225,9 @@ __global__ void max_kernel(const T *__restrict__ prefix_sum,
 
   T max_res = Max<T>::identity;
 
-  for (int s = tid; s < N - window_size + 1; s += stride) {
+  // workaround: 官方参考实现有 bug，会漏掉第一个窗口。
+  const size_t first = window_size < N ? 1 : 0;
+  for (size_t s = first + tid; s < N - window_size + 1; s += stride) {
     const size_t e = s + window_size - 1;
     const T left = s == 0 ? T(0) : prefix_sum[s - 1];
     const T sum = prefix_sum[e] - left;
