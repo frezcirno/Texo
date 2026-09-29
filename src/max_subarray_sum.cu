@@ -245,6 +245,9 @@ extern "C" void solve(const int *input, // (N,)
   int *prefix_sum;
   cudaMalloc(&prefix_sum, N * sizeof(int));
 
+  const int initial = Max<int>::identity;
+  cudaMemcpy(output, &initial, sizeof(initial), cudaMemcpyHostToDevice);
+
   scan(input, prefix_sum, N);
 
   max_kernel<256><<<(N + 255) / 256, 256>>>(prefix_sum, output, N, window_size);
