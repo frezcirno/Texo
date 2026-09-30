@@ -6,7 +6,7 @@
 // 假设一维 block，完整 warp 的 32 个线程一起调用。
 template <typename T> struct Add {
   __host__ __device__ static constexpr T identity() { return T(0); }
-  __device__ static T apply(T a, T b) { return a + b; }
+  __host__ __device__ static T apply(T a, T b) { return a + b; }
 };
 template <typename T> struct Max {
   __host__ __device__ static constexpr T identity() {
@@ -14,7 +14,7 @@ template <typename T> struct Max {
                ? -std::numeric_limits<T>::infinity()
                : std::numeric_limits<T>::lowest();
   }
-  __device__ static T apply(T a, T b) { return max(a, b); }
+  __host__ __device__ static T apply(T a, T b) { return max(a, b); }
 };
 template <typename T> struct Min {
   __host__ __device__ static constexpr T identity() {
@@ -22,8 +22,33 @@ template <typename T> struct Min {
                ? std::numeric_limits<T>::infinity()
                : std::numeric_limits<T>::max();
   }
-  __device__ static T apply(T a, T b) { return min(a, b); }
+  __host__ __device__ static T apply(T a, T b) { return min(a, b); }
 };
+
+struct Seg {
+  float sum;    // 当前区间最后一段的和
+  int has_head; // 该区间是否出现过 flags=1
+};
+
+template <typename T> struct SegOp;
+
+template <> struct SegOp<Seg> {
+  __host__ __device__ static constexpr Seg identity() { return Seg{0.0f, 0}; }
+
+  __host__ __device__ static Seg apply(Seg left, Seg right) {
+    return {right.has_head ? right.sum : left.sum + right.sum,
+            left.has_head | right.has_head};
+  }
+};
+
+template <typename T> __device__ __forceinline__ T shfl_up(T v, int off) {
+  return __shfl_up_sync(0xffffffff, v, off);
+}
+
+__device__ __forceinline__ Seg shfl_up(Seg v, int off) {
+  return {__shfl_up_sync(0xffffffff, v.sum, off),
+          __shfl_up_sync(0xffffffff, v.has_head, off)};
+}
 
 // 假设一维 block，完整 warp 的 32 个线程一起调用。
 template <bool Exclusive = false, template <typename> class Op = Add,
@@ -32,14 +57,14 @@ __device__ inline T warp_scan(T val) {
   const int lane = threadIdx.x & 31;
 #pragma unroll
   for (int off = 1; off < 32; off <<= 1) {
-    T other = __shfl_up_sync(0xffffffff, val, off);
+    T other = shfl_up(val, off);
     if (lane >= off) {
       val = Op<T>::apply(other, val);
     }
   }
   if (Exclusive) {
     // 移动 inclusive 结果，避免用减法转换带来的额外浮点误差。
-    T previous = __shfl_up_sync(0xffffffff, val, 1);
+    T previous = shfl_up(val, 1);
     return lane == 0 ? Op<T>::identity() : previous;
   }
   return val;
@@ -65,7 +90,7 @@ __device__ T block_scan(T val) {
   T local_prefix = inclusive;
   if (Exclusive) {
     // 只有 exclusive 需要移动；整个 block 的分支选择一致。
-    T previous = __shfl_up_sync(0xffffffff, inclusive, 1);
+    T previous = shfl_up(inclusive, 1);
     local_prefix = lane == 0 ? Op<T>::identity() : previous;
   }
 
@@ -153,8 +178,37 @@ void scan(const T *input, T *output, int N) {
   cudaFree(block_sums);
 }
 
-// input, output are device pointers. output[i] = input[0] + ... + input[i]
-// (inclusive).
-extern "C" void solve(const float *input, float *output, int N) {
-  scan(input, output, N);
+__global__ void init_temp(const float *values, const int *flags, Seg *temp,
+                          int N) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < N)
+    temp[i] = {values[i], flags[i] != 0};
+}
+
+__global__ void make_exclusive(const Seg *temp, const int *flags, float *output,
+                               int N) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < N) {
+    output[i] = (i == 0 || flags[i]) ? 0.0f : temp[i - 1].sum;
+  }
+}
+
+// values, flags, output are device pointers
+extern "C" void solve(const float *values, const int *flags, float *output,
+                      int N) {
+  if (N <= 0)
+    return;
+
+  Seg *temp = nullptr;
+  cudaMalloc(&temp, N * sizeof(Seg));
+
+  init_temp<<<(N + 255) / 256, 256>>>(values, flags, temp, N);
+
+  // 1. values/flags 转为 Seg{values[i], flags[i] != 0}
+  scan<false, SegOp>(temp, temp, N); // 得到 inclusive segmented scan
+
+  // 2. 转 exclusive
+  make_exclusive<<<(N + 255) / 256, 256>>>(temp, flags, output, N);
+
+  cudaFree(temp);
 }
