@@ -1,11 +1,14 @@
 #include <cuda_runtime.h>
 
+template <typename T> __host__ __device__ T silu(T x) {
+  return x / (1 + exp(-x));
+}
+
 __global__ void silu_kernel(const float *input, float *output, int N) {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= N)
     return;
-  auto x = input[tid];
-  output[tid] = x / (1 + exp(-x));
+  output[tid] = silu(input[tid]);
 }
 
 // input, output are device pointers
