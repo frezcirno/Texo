@@ -59,7 +59,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | In-place reversal / array interleave | `src/reverse.cu`, `src/interleave.cu` | `make run-reverse`, `make run-interleave` |
 | Repeated FNV-1a hashing | `src/rainbow.cu` | `make run-rainbow` |
 | Softmax: three- and four-kernel variants | `src/softmax_*kernel.cu` | `make run-softmax` |
-| Scaled dot-product attention | `src/mha.cu` | `make run-attention` |
+| Scaled dot-product attention | `src/attention.cu` | `make run-attention` |
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
 | Valid 1D cross-correlation | `src/conv1d.cu` | `make run-conv1d` |
 | Matrix-vector multiplication | `src/mv.cu` | `make run-mv` |
@@ -72,7 +72,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | Zero-padded blur / cross-correlation | `src/gauss_blur.cu` | `make run-gauss-blur` |
 | Dot product, inclusive prefix sum, histogram | `src/dot.cu`, `src/scan.cu`, `src/histogram.cu` | Compile checks only |
 
-`src/mha.cu` currently implements a single attention operation without a batch or
+`src/attention.cu` currently implements a single attention operation without a batch or
 head dimension; the filename does not imply a complete multi-head attention layer.
 The older top-k placeholder in `experimental/top_k.cu` is excluded from the default
 build; the working implementation is in `src/top_k.cu`. A standalone reduction comparison is in

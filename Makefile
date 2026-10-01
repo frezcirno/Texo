@@ -140,7 +140,7 @@ $(BIN_DIR)/softmax_bench: tests/softmax.cpp $(SOFTMAX_OBJECTS) | $(BIN_DIR)
 
 $(BIN_DIR)/max_bench: tests/max.cpp src/max.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
-$(BIN_DIR)/attention_bench: tests/attention.cpp src/mha.cu | $(BIN_DIR)
+$(BIN_DIR)/attention_bench: tests/attention.cpp src/attention.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/conv2d_bench: tests/conv2d.cpp src/conv2d.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@

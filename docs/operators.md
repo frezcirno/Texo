@@ -317,7 +317,7 @@ before consuming outputs on the CPU.
   repeated calls.
 - `softmax_3kernel.cu` / `softmax_4kernel.cu`: softmax over one float vector, with
   maximum subtraction for stability. Vectorized paths require 16-byte alignment.
-- `mha.cu`: `softmax(Q * K^T / sqrt(d)) * V`, with `Q[M,d]`, `K[N,d]`, `V[N,d]`.
+- `attention.cu`: `softmax(Q * K^T / sqrt(d)) * V`, with `Q[M,d]`, `K[N,d]`, `V[N,d]`.
   Uses an intermediate `M*N` allocation. No masking, batching, or head dimension.
 - `alibi.cu`: the [ALiBi challenge](https://leetgpu.com/challenges/attention-with-linear-biases)
   computes `softmax(Q*K^T/sqrt(d) + alpha*(i-j)) * V` in FP32 with Q[M,d],
