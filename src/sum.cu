@@ -5,6 +5,9 @@
 template <typename T> struct Add {
   __host__ __device__ static constexpr T identity() { return T(0); }
   __device__ static T apply(T a, T b) { return a + b; }
+  __device__ static void atomic_apply(T *address, T value) {
+    atomicAdd(address, value);
+  }
 };
 template <typename T> struct Max {
   __host__ __device__ static constexpr T identity() {
@@ -13,6 +16,9 @@ template <typename T> struct Max {
                : std::numeric_limits<T>::lowest();
   }
   __device__ static T apply(T a, T b) { return max(a, b); }
+  __device__ static void atomic_apply(T *address, T value) {
+    atomicMax(address, value);
+  }
 };
 template <typename T> struct Min {
   __host__ __device__ static constexpr T identity() {
@@ -21,6 +27,9 @@ template <typename T> struct Min {
                : std::numeric_limits<T>::max();
   }
   __device__ static T apply(T a, T b) { return min(a, b); }
+  __device__ static void atomic_apply(T *address, T value) {
+    atomicMin(address, value);
+  }
 };
 
 template <template <typename> class Op = Max, typename T>
@@ -100,7 +109,7 @@ __global__ void sum_kernel(const T *__restrict__ input, T *__restrict__ output,
 
   sum = block_reduce<BLOCK_SIZE, Op>(sum);
   if (threadIdx.x == 0) {
-    atomicAdd(output, sum);
+    Op<T>::atomic_apply(output, sum);
   }
 }
 
@@ -112,5 +121,5 @@ extern "C" void solve(const float *input, float *output, int N) {
   // Few hundred blocks: enough to fill A800's 108 SMs, few enough to keep
   // atomicAdd contention on the single output negligible.
   constexpr int GRID_SIZE = 432;
-  sum_kernel<BLOCK_SIZE><<<GRID_SIZE, BLOCK_SIZE>>>(input, output, N);
+  sum_kernel<BLOCK_SIZE, Add><<<GRID_SIZE, BLOCK_SIZE>>>(input, output, N);
 }
