@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
@@ -27,6 +28,33 @@ template <typename T> struct Min {
                : std::numeric_limits<T>::max();
   }
   __device__ static T apply(T a, T b) { return min(a, b); }
+};
+
+// Pack (A, X) into one 64-bit scan value.  The scan's shuffle operations then
+// move both float components together.
+__device__ inline uint64_t pack_affine(float A, float X) {
+  return (uint64_t(__float_as_uint(A)) << 32) | __float_as_uint(X);
+}
+
+__device__ inline float affine_A(uint64_t v) {
+  return __uint_as_float(static_cast<unsigned int>(v >> 32));
+}
+
+__device__ inline float affine_X(uint64_t v) {
+  return __uint_as_float(static_cast<unsigned int>(v));
+}
+
+template <typename T> struct AffineCompose {
+  __host__ __device__ static constexpr T identity() {
+    return T(0x3f80000000000000ull); // packed (1.0f, 0.0f)
+  }
+  // Apply the left interval first, then the right interval:
+  // (A2, X2) o (A1, X1) = (A2*A1, A2*X1 + X2).
+  __device__ static T apply(T left, T right) {
+    const float A1 = affine_A(left), X1 = affine_X(left);
+    const float A2 = affine_A(right), X2 = affine_X(right);
+    return pack_affine(A2 * A1, A2 * X1 + X2);
+  }
 };
 
 // 假设一维 block，完整 warp 的 32 个线程一起调用。
@@ -174,49 +202,24 @@ __global__ inline void reverse_array(const float *__restrict__ input,
   output[b * L + l] = input[b * L + L - l - 1];
 }
 
-template <size_t BLOCK_SIZE>
-__global__ void network(const float *cum_a, // (B, L)
-                        const float *x,     // (B, L)
-                        float *h,           // (B, L)
-                        const size_t B, const size_t L) {
-  // h0 = x0
-  // h1 = a1 x0 + x1
-  // h2 = a2 a1 x0 + a2 x1 + x2
-  // h3 = a3 a2 a1 x0 + a3 a2 x1 + a3 x2 + x3
-  // h4 = a4 a3 a2 a1 x0 + a4 a3 a2 x1 + a4 a3 x2 + a4 x3 + x4
-
-  // a[0] = 1.0
-  // cum_a[i] = a[0] ... a[i]
-  const size_t hl = blockIdx.x;
-  const size_t b = blockIdx.y;
-  float sum = 0;
-  for (int xi = threadIdx.x; xi <= hl; xi += BLOCK_SIZE) {
-    sum += (hl > xi ? x[b * L + xi] * cum_a[b * L + hl] / cum_a[b * L + xi]
-                    : x[b * L + xi]);
-  }
-  __shared__ float total;
-  if (threadIdx.x == 0) {
-    total = 0;
-  }
-  __syncthreads();
-  atomicAdd(&total, sum);
-  __syncthreads();
-  if (threadIdx.x == 0) {
-    h[b * L + hl] = total;
-  }
-  __syncthreads();
+__global__ void make_affine_inputs(const float *__restrict__ a,
+                                   const float *__restrict__ x,
+                                   uint64_t *__restrict__ transforms, size_t B,
+                                   size_t L) {
+  const size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= B * L)
+    return;
+  const size_t l = idx % L;
+  // h[0] = x[0], so the first transform is the identity coefficient plus x[0].
+  transforms[idx] = pack_affine(l == 0 ? 1.0f : a[idx], x[idx]);
 }
 
-__global__ inline void copy_kernel(const float *__restrict__ in,
-                                   float *__restrict__ out, const size_t B,
-                                   const size_t L) {
-  //
-  const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-  if (tid >= B * L)
-    return;
-  const size_t b = tid / L;
-  const size_t l = tid % L;
-  out[b * L + l] = l == 0 ? 1.0 : in[b * L + l];
+__global__ void write_affine_outputs(const uint64_t *__restrict__ prefixes,
+                                     float *__restrict__ h, size_t B,
+                                     size_t L) {
+  const size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < B * L)
+    h[idx] = affine_X(prefixes[idx]);
 }
 
 // a, x, h are device pointers
@@ -224,20 +227,13 @@ extern "C" void solve(const float *a, // (B, L)
                       const float *x, // (B, L)
                       float *h,       // (B, L)
                       int B, int L) {
-  float *cum_a;
-  cudaMalloc(&cum_a, B * L * sizeof(float));
-  cudaMemset(cum_a, 0, B * L * sizeof(float));
-
-  float *a1;
-  cudaMalloc(&a1, B * L * sizeof(float));
-  copy_kernel<<<(B * L + 255) / 256, 256>>>(a, a1, B, L);
-
-  scan<false, Mul>(a1, cum_a, B, L);
-  // a[0] = 0
-  // cum_a[i] = a[0] ... a[i]
-
-  network<256><<<dim3(L, B), 256>>>(cum_a, x, h, B, L);
-
-  cudaFree(a1);
-  cudaFree(cum_a);
+  if (B <= 0 || L <= 0)
+    return;
+  const size_t count = size_t(B) * size_t(L);
+  uint64_t *transforms;
+  cudaMalloc(&transforms, count * sizeof(uint64_t));
+  make_affine_inputs<<<(count + 255) / 256, 256>>>(a, x, transforms, B, L);
+  scan<false, AffineCompose>(transforms, transforms, B, L);
+  write_affine_outputs<<<(count + 255) / 256, 256>>>(transforms, h, B, L);
+  cudaFree(transforms);
 }
