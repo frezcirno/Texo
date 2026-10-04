@@ -58,7 +58,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | Square matrix addition / copy | `src/mat_add.cu`, `src/mat_copy.cu` | `make run-mat-add`, `make run-mat-copy` |
 | In-place reversal / array interleave | `src/reverse.cu`, `src/interleave.cu` | `make run-reverse`, `make run-interleave` |
 | Repeated FNV-1a hashing | `src/rainbow.cu` | `make run-rainbow` |
-| Softmax: three- and four-kernel variants | `src/softmax_*kernel.cu` | `make run-softmax` |
+| Softmax: three-/four-kernel, online, and optional cuDNN accurate baseline | `src/softmax_*kernel.cu`, `src/softmax_online.cu`, `src/softmax_cudnn.cu` | `make run-softmax` |
 | Scaled dot-product attention | `src/attention.cu` | `make run-attention` |
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
 | Valid 1D cross-correlation | `src/conv1d.cu` | `make run-conv1d` |

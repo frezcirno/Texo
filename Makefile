@@ -3,6 +3,10 @@ CUDA_HOME ?= /usr/local/cuda
 NVCC ?= $(CUDA_HOME)/bin/nvcc
 NVCC_ARCH ?= sm_80
 NVCCFLAGS ?= -O3 -std=c++14 -arch=$(NVCC_ARCH) -Xcompiler -Wall
+CUDNN_INCLUDE ?= $(firstword $(wildcard $(CUDA_HOME)/include/cudnn.h /usr/include/cudnn.h))
+CUDNN_LIBRARY ?= $(firstword $(wildcard $(CUDA_HOME)/lib64/libcudnn.so \
+	$(CUDA_HOME)/targets/x86_64-linux/lib/libcudnn.so \
+	/usr/lib/x86_64-linux-gnu/libcudnn.so))
 # Separate architectures to avoid accidentally running an old binary on T4.
 BIN_DIR ?= build/$(NVCC_ARCH)
 SRC_DIR := src
@@ -31,6 +35,7 @@ BATCHED_MM_FP16_ARGS ?=
 ALIBI_ARGS ?=
 DOT_ARGS ?=
 DOT_FP16_ARGS ?=
+SOFTMAX_ARGS ?=
 MM_INT8_ARGS ?=
 MC_INT_ARGS ?=
 MAT_POW_ARGS ?=
@@ -73,9 +78,18 @@ TRITON_SOURCE ?= src/gemm.triton.py
 TRITON_TEST_ARGS ?= --all-configs
 TRITON_BENCH_ARGS ?=
 BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
-KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(wildcard src/*.cu))
+KERNEL_SOURCES := $(filter-out src/softmax_cudnn.cu,$(wildcard src/*.cu))
+KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(KERNEL_SOURCES))
 SUM_OBJECTS := $(BIN_DIR)/sum_manual.o $(BIN_DIR)/sum_cg.o $(BIN_DIR)/sum_cub.o
-SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o
+SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o \
+	$(BIN_DIR)/softmax_online.o
+SOFTMAX_CUDNN_FLAGS :=
+SOFTMAX_CUDNN_LIBS :=
+ifneq ($(and $(CUDNN_INCLUDE),$(CUDNN_LIBRARY)),)
+SOFTMAX_OBJECTS += $(BIN_DIR)/softmax_cudnn.o
+SOFTMAX_CUDNN_FLAGS := -DSOFTMAX_HAS_CUDNN -I$(dir $(CUDNN_INCLUDE))
+SOFTMAX_CUDNN_LIBS := $(CUDNN_LIBRARY) -Wl,-rpath,$(dir $(CUDNN_LIBRARY))
+endif
 
 .PHONY: all help compile-kernels check check-full sanitize clean bench \
         run-reduce run-max run-softmax run-attention run-conv2d run-conv3d \
@@ -135,8 +149,12 @@ $(BIN_DIR)/softmax_%kernel.o: src/softmax_%kernel.cu | $(BIN_DIR)
 	  -Dexp_sum_kernel=softmax_$*kernel_exp_sum_kernel \
 	  -Dsum_kernel=softmax_$*kernel_sum_kernel \
 	  -Dnormalize_kernel=softmax_$*kernel_normalize_kernel -c $< -o $@
+$(BIN_DIR)/softmax_online.o: src/softmax_online.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -Dsolve=softmax_online -c $< -o $@
+$(BIN_DIR)/softmax_cudnn.o: src/softmax_cudnn.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -I$(dir $(CUDNN_INCLUDE)) -c $< -o $@
 $(BIN_DIR)/softmax_bench: tests/softmax.cpp $(SOFTMAX_OBJECTS) | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
+	$(NVCC) $(NVCCFLAGS) $(SOFTMAX_CUDNN_FLAGS) $^ $(SOFTMAX_CUDNN_LIBS) -o $@
 
 $(BIN_DIR)/max_bench: tests/max.cpp src/max.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
@@ -242,7 +260,7 @@ run-reduce bench: $(BIN_DIR)/reduce_bench
 run-max: $(BIN_DIR)/max_bench
 	$<
 run-softmax: $(BIN_DIR)/softmax_bench
-	$<
+	$< $(SOFTMAX_ARGS)
 run-attention: $(BIN_DIR)/attention_bench
 	$<
 run-conv2d: $(BIN_DIR)/conv2d_bench
@@ -438,6 +456,7 @@ check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/reduce_bench 1025 2
 	$(BIN_DIR)/max_bench 1025 2
 	$(BIN_DIR)/softmax_bench 1025 2 1
+	$(BIN_DIR)/softmax_bench 4097 2 1
 	$(BIN_DIR)/attention_bench 17 33 16 2 1
 	$(BIN_DIR)/conv2d_bench 17 35 3 5 2 1
 	$(BIN_DIR)/conv3d_bench 9 11 13 3 3 3 2 1

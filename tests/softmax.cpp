@@ -20,12 +20,22 @@
 
 extern "C" void softmax_3kernel(const float *input, float *output, int N);
 extern "C" void softmax_4kernel(const float *input, float *output, int N);
+extern "C" void softmax_online(const float *input, float *output, int N);
+#ifdef SOFTMAX_HAS_CUDNN
+extern "C" bool softmax_cudnn_setup(int N);
+extern "C" void softmax_cudnn(const float *input, float *output, int N);
+extern "C" void softmax_cudnn_cleanup();
+#endif
 
 using SoftmaxFn = void (*)(const float *, float *, int);
+using SetupFn = bool (*)(int);
+using CleanupFn = void (*)();
 
 struct Implementation {
   const char *name;
   SoftmaxFn function;
+  SetupFn setup = nullptr;
+  CleanupFn cleanup = nullptr;
 };
 
 struct ValidationResult {
@@ -90,6 +100,11 @@ static bool benchmark(const Implementation &implementation,
                       const float *device_input, float *device_output,
                       const std::vector<float> &reference, int N, int warmup,
                       int repeat) {
+  if (implementation.setup != nullptr && !implementation.setup(N)) {
+    std::fprintf(stderr, "%s setup failed\n", implementation.name);
+    return false;
+  }
+
   for (int i = 0; i < warmup; ++i) {
     implementation.function(device_input, device_output, N);
   }
@@ -152,6 +167,9 @@ static bool benchmark(const Implementation &implementation,
 
   CUDA_CHECK(cudaEventDestroy(start_event));
   CUDA_CHECK(cudaEventDestroy(stop_event));
+  if (implementation.cleanup != nullptr) {
+    implementation.cleanup();
+  }
   return validation.passed;
 }
 
@@ -201,12 +219,22 @@ int main(int argc, char **argv) {
   const Implementation implementations[] = {
       {"softmax_3kernel", softmax_3kernel},
       {"softmax_4kernel", softmax_4kernel},
+      {"softmax_online", softmax_online},
+#ifdef SOFTMAX_HAS_CUDNN
+      {"cuDNN accurate", softmax_cudnn, softmax_cudnn_setup,
+       softmax_cudnn_cleanup},
+#endif
   };
 
   cudaDeviceProp properties{};
   CUDA_CHECK(cudaGetDeviceProperties(&properties, 0));
   std::printf("CUDA softmax benchmark\n");
   std::printf("  device             = %s\n", properties.name);
+#ifdef SOFTMAX_HAS_CUDNN
+  std::printf("  cuDNN              = enabled (accurate mode)\n");
+#else
+  std::printf("  cuDNN              = unavailable at build time\n");
+#endif
   std::printf("  elements           = %d\n", N);
   std::printf("  repeats            = %d\n", repeat);
   std::printf("  warmup             = %d\n\n", warmup);
