@@ -8,14 +8,15 @@ namespace wmma = nvcuda::wmma;
 
 // Each thread owns disjoint groups of eight half elements. Shared rows and
 // group starts are 16-byte aligned; global row strides/pointers need not be.
-template <int ROWS, int COLS, int STRIDE, int THREADS>
+template <size_t ROWS, size_t COLS, size_t STRIDE, size_t THREADS>
 __device__ __forceinline__ void
-stage_input_tile(half (&tile)[ROWS][STRIDE], const half *input, int rows,
-                 int cols, size_t row0, size_t col0) {
-  constexpr int PACK = 8;
+stage_input_tile(half (&tile)[ROWS][STRIDE], const half *input,
+                 const size_t rows, const size_t cols, const size_t row0,
+                 const size_t col0) {
+  constexpr size_t PACK = 8;
   for (int pack = threadIdx.x; pack < ROWS * (COLS / PACK); pack += THREADS) {
-    const int row = pack / (COLS / PACK);
-    const int col = (pack % (COLS / PACK)) * PACK;
+    const size_t row = pack / (COLS / PACK);
+    const size_t col = (pack % (COLS / PACK)) * PACK;
     const size_t global_row = row0 + row, global_col = col0 + col;
 #if __CUDA_ARCH__ >= 800
     if (global_row < size_t(rows) && global_col + PACK <= size_t(cols)) {
