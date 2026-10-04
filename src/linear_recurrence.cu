@@ -163,8 +163,81 @@ void scan(const T *input, T *output, const size_t B, const size_t N) {
   cudaFree(block_sums);
 }
 
-// input, output are device pointers. output[i] = input[0] + ... + input[i]
-// (inclusive).
-extern "C" void solve(const float *input, float *output, int N) {
-  scan(input, output, 1, N);
+__global__ inline void reverse_array(const float *__restrict__ input,
+                                     float *__restrict__ output, const size_t B,
+                                     const size_t L) {
+  const size_t BL = blockIdx.x * blockDim.x + threadIdx.x;
+  if (BL >= B * L)
+    return;
+  const size_t b = BL / L;
+  const size_t l = BL % L;
+  output[b * L + l] = input[b * L + L - l - 1];
+}
+
+template <size_t BLOCK_SIZE>
+__global__ void network(const float *cum_a, // (B, L)
+                        const float *x,     // (B, L)
+                        float *h,           // (B, L)
+                        const size_t B, const size_t L) {
+  // h0 = x0
+  // h1 = a1 x0 + x1
+  // h2 = a2 a1 x0 + a2 x1 + x2
+  // h3 = a3 a2 a1 x0 + a3 a2 x1 + a3 x2 + x3
+  // h4 = a4 a3 a2 a1 x0 + a4 a3 a2 x1 + a4 a3 x2 + a4 x3 + x4
+
+  // a[0] = 1.0
+  // cum_a[i] = a[0] ... a[i]
+  const size_t hl = blockIdx.x;
+  const size_t b = blockIdx.y;
+  float sum = 0;
+  for (int xi = threadIdx.x; xi <= hl; xi += BLOCK_SIZE) {
+    sum += (hl > xi ? x[b * L + xi] * cum_a[b * L + hl] / cum_a[b * L + xi]
+                    : x[b * L + xi]);
+  }
+  __shared__ float total;
+  if (threadIdx.x == 0) {
+    total = 0;
+  }
+  __syncthreads();
+  atomicAdd(&total, sum);
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    h[b * L + hl] = total;
+  }
+  __syncthreads();
+}
+
+__global__ inline void copy_kernel(const float *__restrict__ in,
+                                   float *__restrict__ out, const size_t B,
+                                   const size_t L) {
+  //
+  const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= B * L)
+    return;
+  const size_t b = tid / L;
+  const size_t l = tid % L;
+  out[b * L + l] = l == 0 ? 1.0 : in[b * L + l];
+}
+
+// a, x, h are device pointers
+extern "C" void solve(const float *a, // (B, L)
+                      const float *x, // (B, L)
+                      float *h,       // (B, L)
+                      int B, int L) {
+  float *cum_a;
+  cudaMalloc(&cum_a, B * L * sizeof(float));
+  cudaMemset(cum_a, 0, B * L * sizeof(float));
+
+  float *a1;
+  cudaMalloc(&a1, B * L * sizeof(float));
+  copy_kernel<<<(B * L + 255) / 256, 256>>>(a, a1, B, L);
+
+  scan<false, Mul>(a1, cum_a, B, L);
+  // a[0] = 0
+  // cum_a[i] = a[0] ... a[i]
+
+  network<256><<<dim3(L, B), 256>>>(cum_a, x, h, B, L);
+
+  cudaFree(a1);
+  cudaFree(cum_a);
 }
