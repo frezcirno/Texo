@@ -198,69 +198,22 @@ before consuming outputs on the CPU.
   Both paths overwrite y. M <= 0 is a no-op; N=0 writes zeros. M*N must fit int.
   The test compares both kernels with a CPU double reference. `nnz` is a retained,
   unused parameter; this is dense storage, not CSR/COO sparse storage.
-- `gemm.cu`, `gemm_tile.cu`, `gemm_wmma.cu`, `gemm_wmma_tiled.cu`, `gemm_cublas.cu`:
-  row-major `C = alpha * A * B + beta * C`, with `A[M,K]`, `B[K,N]`, `C[M,N]`.
-  Inputs and output use FP16 with FP32 accumulation. `C` is read only when
-  `beta != 0`. Empty output dimensions are a no-op; K=0 scales C by beta.
-  Variants use scalar arithmetic, shared-memory tiling, single-warp WMMA,
-  multi-warp WMMA, and cuBLAS, respectively. Multi-warp WMMA defaults to a 64x64
-  output block with four warps, a K chunk of 32, and 16 half elements of shared-row
-  padding. Each warp computes 32x32 through four accumulator fragments. See
-  [the experiment notes](gemm-wmma-tiling.md) for compile-time tuning parameters.
-  The cuBLAS baseline uses `cublasGemmEx`, disallows reduced-precision
-  reductions, and reuses a handle on one selected device per host thread with the
-  default stream. It requires linking with `-lcublas`.
-- `gemm_wmma_tiled_pipeline.cu`, `gemm_wmma_tiled_pipeline_aligned.cu`: the same
-  FP16 GEMM contract with two input buffers and 16-byte asynchronous staging on
-  sm_80+. Partial or unaligned input groups use scalar loads and zero-fill;
-  sm_75 uses synchronous staging. The aligned version selects a specialization
-  when M/N/K are positive multiples of BM/BN/BK and A/B are 16-byte aligned.
-  This guarantees complete tiles and aligned row strides. C still needs only
-  half alignment. Other inputs use the generic pipeline, including K=0. Both
-  versions use `size_t` address arithmetic and flattened output tile grids.
-- `gemm_wmma_tiled_pipeline_aligned_swizzled.cu`: the same FP16 contract and
-  full/aligned dispatch conditions, with XOR storage and explicit `ldmatrix`/`mma.sync`
-  when BN/BK are powers of two. It retains full-tile WMMA otherwise and writes
-  packed `half2` only when C is four-byte aligned, with scalar stores otherwise.
-  Default block/warp tiles are 64x64/32x32. See
-  [the shared-layout notes](gemm-wmma-shared-layout.md) for tuning and validation.
-- `gemm_wmma_tiled_pipeline_multistage.cu`: the same FP16 contract, with deeper
-  input and operand buffering for full/aligned tiles. Generic inputs retain a
-  fixed 64x64 WMMA pipeline. See the [multistage notes](gemm-wmma-multistage.md)
-  for tile selection, alignment, and tuning limits.
-- `gemm_wmma_tiled_pipeline_mainloop.cu`: the same FP16 contract, with a BK=64
-  mainloop for small, complete, aligned output grids. Generic inputs
-  retain the fixed 64x64 WMMA pipeline. See the
-  [mainloop notes](gemm-wmma-mainloop.md) for dispatch and tuning.
-- `gemm_wmma_tiled_pipeline_reuse.cu`: the same FP16 contract, adding a
-  96x128 block / 48x64 warp tile on sufficiently large complete/aligned grids.
-  See the [reuse-tile notes](gemm-wmma-reuse.md) for its dispatch boundaries
-  and measured benefit from fewer A/B loads.
-- `gemm_wmma_tiled_pipeline_epilogue.cu`: the same FP16 contract, with an
-  alpha=1/beta=0 template specialization and a general alpha/beta path.
-  See the [epilogue notes](gemm-wmma-epilogue.md) for dispatch and measurements.
-- `gemm_wmma_tiled_pipeline_large.cu`: the same FP16 contract, allowing larger
-  block/warp tiles with dynamic shared input storage above 48 KiB. Unsupported
-  shared-memory requirements fall back to the generic pipeline. See the
-  [large-tile notes](gemm-wmma-large.md) for configuration and experiments.
-- `gemm_wmma_tiled_pipeline_schedule.cu`: the same FP16 contract, with distributed
-  asynchronous copies, interleaved operand loads, and compact address generation.
-  Measured A800 grid bands select a 128x128 tile with three or four stages;
-  other shapes and general alpha/beta retain the previous dispatcher. See the
-  [scheduling notes](gemm-wmma-schedule.md) for controls and measurements.
+- `gemm.cu`, `gemm_tiled.cu`, `gemm_wmma.cu`, `gemm_wmma_tiled.cu`,
+  `gemm_wmma_tiled_pipeline.cu`, `gemm_wmma_tiled_pipeline_schedule.cu`, and
+  `gemm_cublas.cu`: row-major `C = alpha * A * B + beta * C`, with A[M,K],
+  B[K,N], and C[M,N]. Inputs and output use FP16 with FP32 accumulation. C is
+  read only when beta != 0; empty output dimensions are a no-op and K=0 scales C
+  by beta. These implementations show scalar arithmetic, shared-memory tiling,
+  single- and multi-warp WMMA, asynchronous staging, optimized mainloop scheduling,
+  and cuBLAS. See the [WMMA tiling](gemm-wmma-tiling.md), [pipeline](gemm-wmma-pipeline.md),
+  and [scheduling](gemm-wmma-schedule.md) notes. cuBLAS uses `cublasGemmEx`,
+  disallows reduced-precision reductions, and reuses a handle per host thread/device.
 - `gemm.triton.py`: the same row-major FP16 A[M,K], B[K,N], C[M,N] contract,
   FP32 accumulation, and in-place `C = alpha*A*B + beta*C`. Pass contiguous CUDA
   tensors with the stated dimensions. Masks handle M/N/K tails and unaligned
   bases; M/N=0 does no work, K=0 scales C, and beta=0 skips reading old C.
   Seven tile/warp/stage configurations are autotuned. See the
   [Triton integration](gemm-triton.md) for checks and comparison scope.
-- `gemm.triton.v2.py` / `gemm.triton.v3.py`: the same contiguous row-major FP16
-  contract, with grouped tile order, bounded 32-bit addressing, scalar
-  specialization, and a cached JIT launch after CUDA-Graph tuning into separate
-  output storage. V2 has 32 candidates and uses newer Triton autotune APIs;
-  V3 has 34 candidates, supports Triton 3.1's graph-tuning interface and
-  synchronizes input production before first-use tuning. Use `TRITON_SOURCE`
-  to select either version in the [shared checks](gemm-triton.md).
 - `batched_mm.cu`: FP32 batched multiplication with A[BATCH,M,K], B[BATCH,K,N]
   and C[BATCH,M,N], using contiguous row-major storage without broadcasting or
   transposes. The current kernel computes `C += A*B`; clear C before a standalone

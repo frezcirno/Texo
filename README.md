@@ -63,7 +63,7 @@ after changing compiler flags or toolkit while retaining the same build director
 | Valid 2D / 3D cross-correlation | `src/conv2d.cu`, `src/conv3d.cu` | `make run-conv2d`, `make run-conv3d` |
 | Valid 1D cross-correlation | `src/conv1d.cu` | `make run-conv1d` |
 | Matrix-vector multiplication | `src/mv.cu` | `make run-mv` |
-| FP16 GEMM: scalar, tiled, WMMA, multi-warp WMMA, pipelined WMMA, aligned pipeline, swizzled pipeline, multistage pipeline, mainloop scheduling, larger reuse tile, specialized epilogue, large-tile experiments, distributed mainloop, cuBLAS | `src/gemm.cu`, `src/gemm_tile.cu`, `src/gemm_wmma.cu`, `src/gemm_wmma_tiled.cu`, `src/gemm_wmma_tiled_pipeline.cu`, `src/gemm_wmma_tiled_pipeline_aligned.cu`, `src/gemm_wmma_tiled_pipeline_aligned_swizzled.cu`, `src/gemm_wmma_tiled_pipeline_multistage.cu`, `src/gemm_wmma_tiled_pipeline_mainloop.cu`, `src/gemm_wmma_tiled_pipeline_reuse.cu`, `src/gemm_wmma_tiled_pipeline_epilogue.cu`, `src/gemm_wmma_tiled_pipeline_large.cu`, `src/gemm_wmma_tiled_pipeline_schedule.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
+| FP16 GEMM: scalar, tiled, single-warp WMMA, multi-warp WMMA, pipelined WMMA, scheduled WMMA, cuBLAS | `src/gemm.cu`, `src/gemm_tiled.cu`, `src/gemm_wmma.cu`, `src/gemm_wmma_tiled.cu`, `src/gemm_wmma_tiled_pipeline.cu`, `src/gemm_wmma_tiled_pipeline_schedule.cu`, `src/gemm_cublas.cu` | `make run-gemm-compare` |
 | Batched FP32 matrix multiplication | `src/batched_mm.cu` | `make run-batched-mm` |
 | Quantized INT8 matrix multiplication | `src/mm_int8.cu` | `make run-mm-int8` |
 | FP16 GEMM in Triton | `src/gemm.triton.py` | `make check-gemm-triton`, `make bench-gemm-triton-compare` |
@@ -84,9 +84,6 @@ The optional [Triton GEMM integration](docs/gemm-triton.md) reuses the CUDA
 correctness cases and compares Triton, CUDA schedule, and cuBLAS on identical
 buffers. `make check WITH_TRITON=1` includes its checks; the default CUDA build
 does not require Python packages.
-Use `TRITON_SOURCE=src/gemm.triton.v2.py` or `src/gemm.triton.v3.py` to select
-another version. Repeated `--reference-source` arguments in `TRITON_BENCH_ARGS`
-compare multiple Triton versions with CUDA and cuBLAS in one process.
 
 ## Running individual tests
 
@@ -100,7 +97,7 @@ build/sm_80/top_k_test 50000000 100          # N k; includes wrapper timing
 build/sm_80/gauss_blur_test 17 35 3 5        # image rows/cols, kernel rows/cols
 ```
 
-Compare all fourteen GEMM implementations on the same selected GPU:
+Compare the seven representative GEMM implementations on the same selected GPU:
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 make check-gemm
@@ -108,7 +105,7 @@ CUDA_VISIBLE_DEVICES=3 make run-gemm-compare  # default: M=N=K=1024, 100 repeats
 CUDA_VISIBLE_DEVICES=3 make run-gemm-compare GEMM_ARGS="256 2048 512 100"
 ```
 
-All fourteen use the same CPU reference, FP16 inputs/output, FP32 accumulation, and
+All seven use the same CPU reference, FP16 inputs/output, FP32 accumulation, and
 row-major `C = alpha * A * B + beta * C` contract. The cuBLAS baseline links with
 `-lcublas` and uses `cublasGemmEx` with FP32 reductions; Tensor Core algorithm
 selection is left to cuBLAS. Its handle is reused on one selected device and the
@@ -119,7 +116,7 @@ CUDA-event batches. It excludes allocation, copies, and CPU validation, but incl
 any host submission gaps between GPU operations. Output guards preserve 256-byte
 alignment; a separate correctness case also tests an unaligned output pointer.
 
-Profile all ten WMMA variants and cuBLAS with Nsight Systems:
+Profile the seven representative GEMMs with Nsight Systems:
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 make nsys-gemm  # M=N=K=1024, 100 repeats per batch
@@ -128,16 +125,11 @@ make nsys-gemm-stats                  # Reprint the default directory's reports
 make nsys-gemm-stats NSYS_DIR=build/nsys-512
 ```
 
-`nsys-gemm` builds the eleven benchmarks, profiles them serially even with `make -j`,
+`nsys-gemm` builds the seven benchmarks, profiles them serially even with `make -j`,
 then prints kernel and launch/queue/execution summaries in microseconds. Reports
 are saved as `gemm_wmma.nsys-rep`, `gemm_wmma_tiled.nsys-rep`,
-`gemm_wmma_tiled_pipeline.nsys-rep`, `gemm_wmma_tiled_pipeline_aligned.nsys-rep`,
-`gemm_wmma_tiled_pipeline_aligned_swizzled.nsys-rep`, `gemm_wmma_tiled_pipeline_multistage.nsys-rep`,
-`gemm_wmma_tiled_pipeline_mainloop.nsys-rep`, `gemm_wmma_tiled_pipeline_reuse.nsys-rep`,
-`gemm_wmma_tiled_pipeline_epilogue.nsys-rep`, `gemm_wmma_tiled_pipeline_large.nsys-rep`,
-`gemm_wmma_tiled_pipeline_schedule.nsys-rep`, and
-`gemm_cublas.nsys-rep` under `NSYS_DIR` (default: `build/sm_80/nsys`). Open these in
-the Nsight Systems GUI to compare timelines. Reruns overwrite the eleven reports;
+`gemm_wmma_tiled_pipeline.nsys-rep`, `gemm_wmma_tiled_pipeline_schedule.nsys-rep`, and `gemm_cublas.nsys-rep` under `NSYS_DIR` (default: `build/sm_80/nsys`). Open these in
+the Nsight Systems GUI to compare timelines. Reruns overwrite the seven reports;
 use a different `NSYS_DIR` to retain another shape or run. Override `NSYS` for the
 tool path, `NSYS_FLAGS` for collection options, and `NSYS_REPORTS` for stats reports.
 The defaults trace CUDA, NVTX, and OS runtime calls, with CPU sampling and context
@@ -149,7 +141,7 @@ has 507 kernel instances. Stats include warmup/check calls; select the benchmark
 region in the GUI for steady-state comparisons. Tracing can affect timings;
 use the ordinary benchmarks as well when reporting performance.
 
-Profile all fourteen GEMMs with Nsight Compute:
+Profile the seven representative GEMMs with Nsight Compute:
 
 ```bash
 make -j2 ncu-gemm-build               # Separate binaries with -lineinfo
@@ -191,7 +183,7 @@ CUDA_VISIBLE_DEVICES=3 make ncu-gemm GEMM_ARGS="128 128 128 2" \
 ```
 
 See [GEMM counter analysis](docs/gemm-ncu-analysis.md) for the measured differences
-between the five implementations and the limits of the collected metrics.
+between the seven implementations and the limits of the collected metrics.
 
 The multi-warp WMMA experiment uses a 64x64 output block, four warps, and a 32x32
 output per warp. See [WMMA tiling experiments](docs/gemm-wmma-tiling.md) for the
@@ -209,69 +201,9 @@ validation, and timing results. It is included in `check-gemm`, `check`,
 CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline GEMM_ARGS="1024 1024 1024 100"
 ```
 
-`gemm_wmma_tiled_pipeline_aligned.cu` specializes complete tiles with 16-byte-aligned
-A/B pointers. It precomputes copy addresses and removes per-copy matrix checks.
-See the [aligned pipeline experiment](docs/gemm-wmma-pipeline-aligned.md) and
-[NCU follow-up against cuBLAS](docs/gemm-wmma-pipeline-aligned-ncu.md).
-
-`gemm_wmma_tiled_pipeline_aligned_swizzled.cu` is the separate XOR shared-layout
-successor. It adds explicit `ldmatrix`/`mma.sync` and packed output stores, using
-16 KiB shared memory for the default 64x64 block and 32x32 warp tile. See the
-[shared-layout experiment](docs/gemm-wmma-shared-layout.md).
-
-`gemm_wmma_tiled_pipeline_multistage.cu` extends that design with deeper input
-buffering, register operand prefetch, and larger data-reuse tiles. See the
-[multistage experiment](docs/gemm-wmma-multistage.md) for dispatch, validation,
-and before/after measurements.
-
-`gemm_wmma_tiled_pipeline_mainloop.cu` adds a BK=64 path for small, complete
-output grids to reduce mainloop instructions. Cross-chunk register prefetch and
-input-stage unrolling were also measured but did not beat this simpler loop. See
-the [mainloop experiment](docs/gemm-wmma-mainloop.md) for the selected parameters,
-validation, and measurements. Each version has an independent benchmark and
-is included in `check-gemm`, `check`, `sanitize`, `run-gemm-compare`, `nsys-gemm`,
-and `ncu-gemm`.
-
-`gemm_wmma_tiled_pipeline_reuse.cu` adds a 96x128 block / 48x64 warp tile for
-sufficiently populated aligned grids, reducing repeated A/B reads. See the
-[reuse-tile experiment](docs/gemm-wmma-reuse.md) for dispatch, NCU results,
-and the tested configurations that did not improve performance.
-
-`gemm_wmma_tiled_pipeline_epilogue.cu` adds a compile-time specialization for
-alpha=1, beta=0 on native and generic paths. Other scalar values use the general
-epilogue. See the [epilogue experiment](docs/gemm-wmma-epilogue.md) for generated
-code, validation, and performance measurements.
-
-`gemm_wmma_tiled_pipeline_large.cu` adds dynamic shared input storage above
-48 KiB for larger block/warp experiments. See the [large-tile experiment](docs/gemm-wmma-large.md)
-for the three-stage investigation and measured configuration tradeoffs.
-`check-gemm`, `check`, and `sanitize` also exercise a forced 96 KiB /
-16-warp configuration independently of the automatic dispatcher.
-
-`gemm_wmma_tiled_pipeline_schedule.cu` distributes copies and fragment loads
-through MMA and reduces address bookkeeping. It selects the new path in measured
-A800 grid bands and retains previous kernels elsewhere. See the
-[scheduling experiment](docs/gemm-wmma-schedule.md) for cumulative step controls,
-NCU evidence, and optional large-shape `*_perf` targets using a cuBLAS reference.
-
-```bash
-CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-aligned-swizzled GEMM_ARGS="1024 1024 1024 100"
-CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-multistage GEMM_ARGS="2048 2048 2048 100"
-CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-mainloop GEMM_ARGS="1024 1024 1024 100"
-CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-reuse GEMM_ARGS="1536 1536 1536 100"
-CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-epilogue GEMM_ARGS="1024 1024 1024 100"
-CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-large GEMM_ARGS="4096 4096 4096 100"
-CUDA_VISIBLE_DEVICES=3 make run-gemm-wmma-tiled-pipeline-schedule GEMM_ARGS="1024 1024 1024 100"
-```
-
-Tests return nonzero on numerical mismatches or CUDA errors. The newer suites
-check CPU references, partial blocks, repeated calls, and output guards. Floating
-point tolerances are printed by the test or defined next to its validation code.
-A passing suite covers its tested cases, not all possible inputs.
-
-`make check-full` allocates about 400 MB of GPU input storage for the largest MSE
-case, plus host buffers and runtime overhead. On a shared GPU, select a device with
-sufficient free memory.
+`gemm_wmma_tiled_pipeline_schedule.cu` is the final optimized CUDA stage, with
+shape-based tile/stage dispatch. The preceding pipeline source remains as a simpler
+asynchronous-staging milestone. See [scheduling notes](docs/gemm-wmma-schedule.md).
 
 ## Repository layout
 

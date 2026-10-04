@@ -29,7 +29,7 @@ record additional inspection through the installed NCU Python Report Interface.
 | Implementation | NCU duration (us) | Registers/thread | Achieved occupancy (%) | Theoretical occupancy (%) | Tensor active (%) |
 |---|---:|---:|---:|---:|---:|
 | gemm | 815.552 | 32 | 91.85 | 100.00 | 0.00 |
-| gemm_tile | 436.096 | 29 | 92.27 | 100.00 | 0.06 |
+| gemm_tiled | 436.096 | 29 | 92.27 | 100.00 | 0.06 |
 | gemm_wmma | 390.528 | 48 | 34.66 | 50.00 | 1.83 |
 | gemm_wmma_tiled | 166.752 | 96 | 14.85 | 31.25 | 4.21 |
 | gemm_cublas | 17.248 | 196 | 6.18 | 12.50 | 58.74 |
@@ -44,7 +44,7 @@ Tensor active is
 occupancy is `sm__warps_active.avg.pct_of_peak_sustained_active`. Neither is a
 percentage of theoretical GEMM FLOP/s. The scalar variants contain no HMMA in
 their captured instruction streams; the tiny nonzero Tensor counter for
-`gemm_tile` should not be interpreted as evidence that it uses Tensor Cores.
+`gemm_tiled` should not be interpreted as evidence that it uses Tensor Cores.
 
 ## What changes between implementations
 
@@ -64,7 +64,7 @@ be inconsistent with the counters.
 
 ### Shared-memory scalar GEMM: reuse removes most global loads
 
-`gemm_tile` reduces warp-level global-load instructions to 4,194,304, a 16x
+`gemm_tiled` reduces warp-level global-load instructions to 4,194,304, a 16x
 reduction. That agrees with the 16x16 shared tile's reuse structure. Duration
 drops from 815.55 to 436.10 us while occupancy remains around 92%.
 
@@ -143,7 +143,7 @@ reconstructed from its closed-source implementation.
 | Implementation | Total dynamic warp instructions | HMMA instructions |
 |---|---:|---:|
 | gemm | 249,724,928 | 0 |
-| gemm_tile | 204,570,624 | 0 |
+| gemm_tiled | 204,570,624 | 0 |
 | gemm_wmma | 77,316,096 | 524,288 |
 | gemm_wmma_tiled | 29,062,144 | 524,288 |
 | gemm_cublas | 1,701,216 | 540,672 |

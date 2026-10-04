@@ -18,15 +18,10 @@ ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test g
 DOT_TESTS := dot_test dot_fp16_test
 BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test batched_mm_fp16_test alibi_test mm_int8_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test rms_norm_test group_norm_test layer_norm_test max_pooling_2d_test count_test count3d_test slice_sum_test slice_sum2d_test slice_sum3d_test max_subarray_sum_test 2d_jacobi_stencil_test dequantization_test rope_test sparse_mm_test stream_compaction_test segmented_scan_test fft2d_test adderboard_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS) $(DOT_TESTS) lr_newton_test
-GEMM_BENCHES := gemm_bench gemm_tile_bench gemm_wmma_bench gemm_wmma_tiled_bench \
-                gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_aligned_bench \
-                gemm_wmma_tiled_pipeline_aligned_swizzled_bench gemm_wmma_tiled_pipeline_multistage_bench \
-                gemm_wmma_tiled_pipeline_mainloop_bench gemm_wmma_tiled_pipeline_reuse_bench \
-                gemm_wmma_tiled_pipeline_epilogue_bench gemm_wmma_tiled_pipeline_large_bench \
-                gemm_wmma_tiled_pipeline_schedule_bench \
+GEMM_BENCHES := gemm_bench gemm_tiled_bench gemm_wmma_bench gemm_wmma_tiled_bench \
+                gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_schedule_bench \
                 gemm_cublas_bench
 PROGRAMS += $(filter-out gemm_bench,$(GEMM_BENCHES))
-GEMM_DYNAMIC_TEST := $(BIN_DIR)/gemm_wmma_tiled_pipeline_large_dynamic_test
 GEMM_SCHEDULE_TESTS := $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_fixed_test \
                        $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_four_test \
                        $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_dynamic_test
@@ -56,10 +51,7 @@ NSYS ?= $(CUDA_HOME)/bin/nsys
 NSYS_DIR ?= $(BIN_DIR)/nsys
 NSYS_FLAGS ?= --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none
 NSYS_REPORTS ?= cuda_gpu_kern_sum,cuda_kern_exec_sum
-NSYS_GEMMS := gemm_wmma gemm_wmma_tiled gemm_wmma_tiled_pipeline gemm_wmma_tiled_pipeline_aligned \
-              gemm_wmma_tiled_pipeline_aligned_swizzled gemm_wmma_tiled_pipeline_multistage \
-              gemm_wmma_tiled_pipeline_mainloop gemm_wmma_tiled_pipeline_reuse \
-              gemm_wmma_tiled_pipeline_epilogue gemm_wmma_tiled_pipeline_large \
+NSYS_GEMMS := gemm_wmma gemm_wmma_tiled gemm_wmma_tiled_pipeline \
               gemm_wmma_tiled_pipeline_schedule gemm_cublas
 NCU ?= $(CUDA_HOME)/bin/ncu
 NCU_RUN ?=
@@ -113,11 +105,8 @@ endif
         run-slice-sum3d sanitize-slice-sum3d \
         run-max-subarray-sum sanitize-max-subarray-sum \
         run-2d-jacobi-stencil run-dequantization run-rope run-sparse-mm run-stream-compaction run-segmented-scan run-adderboard \
-        run-gemm-tile run-gemm-wmma run-gemm-wmma-tiled run-gemm-cublas run-gemm-compare check-gemm \
-        run-gemm-wmma-tiled-pipeline run-gemm-wmma-tiled-pipeline-aligned \
-        run-gemm-wmma-tiled-pipeline-aligned-swizzled run-gemm-wmma-tiled-pipeline-multistage \
-        run-gemm-wmma-tiled-pipeline-mainloop run-gemm-wmma-tiled-pipeline-reuse \
-        run-gemm-wmma-tiled-pipeline-epilogue run-gemm-wmma-tiled-pipeline-large \
+        run-gemm-tiled run-gemm-wmma run-gemm-wmma-tiled run-gemm-wmma-tiled-pipeline \
+        run-gemm-cublas run-gemm-compare check-gemm \
         run-gemm-wmma-tiled-pipeline-schedule \
         nsys-gemm nsys-gemm-stats ncu-gemm-build ncu-gemm ncu-gemm-stats \
         check-gemm-triton bench-gemm-triton-compare sanitize-gemm-triton
@@ -169,27 +158,13 @@ $(BIN_DIR)/mv_bench: tests/mv.cu src/mv.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $< -o $@
 $(BIN_DIR)/gemm_bench: tests/gemm.cu src/gemm.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
-$(BIN_DIR)/gemm_tile_bench: tests/gemm.cu src/gemm_tile.cu | $(BIN_DIR)
+$(BIN_DIR)/gemm_tiled_bench: tests/gemm.cu src/gemm_tiled.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gemm_wmma_bench: tests/gemm.cu src/gemm_wmma.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gemm_wmma_tiled_bench: tests/gemm.cu src/gemm_wmma_tiled.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gemm_wmma_tiled_pipeline_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
-$(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_aligned.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
-$(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_aligned_swizzled.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
-$(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_multistage.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
-$(BIN_DIR)/gemm_wmma_tiled_pipeline_mainloop_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_mainloop.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
-$(BIN_DIR)/gemm_wmma_tiled_pipeline_reuse_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_reuse.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
-$(BIN_DIR)/gemm_wmma_tiled_pipeline_epilogue_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_epilogue.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) $^ -o $@
-$(BIN_DIR)/gemm_wmma_tiled_pipeline_large_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_large.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
 $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_bench: tests/gemm.cu src/gemm_wmma_tiled_pipeline_schedule.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@
@@ -206,12 +181,6 @@ $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_four_test: tests/gemm.cu src/gemm_w
 $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_dynamic_test: tests/gemm.cu src/gemm_wmma_tiled_pipeline_schedule.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) -DGEMM_AUTO_TILE=0 -DGEMM_BM=128 -DGEMM_BN=256 \
 	  -DGEMM_BK=64 -DGEMM_WM=32 -DGEMM_WN=64 -DGEMM_STAGES=2 \
-	  -DGEMM_MULTISTAGE_MIN_BLOCKS=1 $^ -o $@
-# Exercise dynamic storage and a different warp partition even when automatic
-# dispatch retains smaller static tiles. This is a check target, not a baseline.
-$(GEMM_DYNAMIC_TEST): tests/gemm.cu src/gemm_wmma_tiled_pipeline_large.cu | $(BIN_DIR)
-	$(NVCC) $(NVCCFLAGS) -DGEMM_AUTO_TILE=0 -DGEMM_BM=128 -DGEMM_BN=256 \
-	  -DGEMM_BK=32 -DGEMM_WM=32 -DGEMM_WN=64 -DGEMM_STAGES=4 \
 	  -DGEMM_MULTISTAGE_MIN_BLOCKS=1 $^ -o $@
 $(BIN_DIR)/gemm_cublas_bench: tests/gemm.cu src/gemm_cublas.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@ -lcublas
@@ -271,27 +240,13 @@ run-mv: $(BIN_DIR)/mv_bench
 	$<
 run-gemm: $(BIN_DIR)/gemm_bench
 	$<
-run-gemm-tile: $(BIN_DIR)/gemm_tile_bench
+run-gemm-tiled: $(BIN_DIR)/gemm_tiled_bench
 	$<
 run-gemm-wmma: $(BIN_DIR)/gemm_wmma_bench
 	$<
 run-gemm-wmma-tiled: $(BIN_DIR)/gemm_wmma_tiled_bench
 	$<
 run-gemm-wmma-tiled-pipeline: $(BIN_DIR)/gemm_wmma_tiled_pipeline_bench
-	$< $(GEMM_ARGS)
-run-gemm-wmma-tiled-pipeline-aligned: $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench
-	$< $(GEMM_ARGS)
-run-gemm-wmma-tiled-pipeline-aligned-swizzled: $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench
-	$< $(GEMM_ARGS)
-run-gemm-wmma-tiled-pipeline-multistage: $(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench
-	$< $(GEMM_ARGS)
-run-gemm-wmma-tiled-pipeline-mainloop: $(BIN_DIR)/gemm_wmma_tiled_pipeline_mainloop_bench
-	$< $(GEMM_ARGS)
-run-gemm-wmma-tiled-pipeline-reuse: $(BIN_DIR)/gemm_wmma_tiled_pipeline_reuse_bench
-	$< $(GEMM_ARGS)
-run-gemm-wmma-tiled-pipeline-epilogue: $(BIN_DIR)/gemm_wmma_tiled_pipeline_epilogue_bench
-	$< $(GEMM_ARGS)
-run-gemm-wmma-tiled-pipeline-large: $(BIN_DIR)/gemm_wmma_tiled_pipeline_large_bench
 	$< $(GEMM_ARGS)
 run-gemm-wmma-tiled-pipeline-schedule: $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_bench
 	$< $(GEMM_ARGS)
@@ -301,7 +256,7 @@ run-gemm-compare: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES))
 	@set -e; for binary in $^; do \
 	  echo "$$binary"; "$$binary" $(GEMM_ARGS); \
 	done
-check-gemm: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES)) $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
+check-gemm: $(addprefix $(BIN_DIR)/,$(GEMM_BENCHES)) $(GEMM_SCHEDULE_TESTS)
 	@set -e; for binary in $^; do \
 	  echo "$$binary"; "$$binary" --check-only; \
 	done
@@ -452,7 +407,7 @@ run-adderboard: $(BIN_DIR)/adderboard_test
 	$<
 
 # Small reproducible GPU checks. Every executable returns nonzero on failure.
-check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
+check: all $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/reduce_bench 1025 2
 	$(BIN_DIR)/max_bench 1025 2
 	$(BIN_DIR)/softmax_bench 1025 2 1
@@ -462,18 +417,10 @@ check: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/conv3d_bench 9 11 13 3 3 3 2 1
 	$(BIN_DIR)/mv_bench --check-only
 	$(BIN_DIR)/gemm_bench --check-only
-	$(BIN_DIR)/gemm_tile_bench --check-only
+	$(BIN_DIR)/gemm_tiled_bench --check-only
 	$(BIN_DIR)/gemm_wmma_bench --check-only
 	$(BIN_DIR)/gemm_wmma_tiled_bench --check-only
 	$(BIN_DIR)/gemm_wmma_tiled_pipeline_bench --check-only
-	$(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench --check-only
-	$(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench --check-only
-	$(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench --check-only
-	$(BIN_DIR)/gemm_wmma_tiled_pipeline_mainloop_bench --check-only
-	$(BIN_DIR)/gemm_wmma_tiled_pipeline_reuse_bench --check-only
-	$(BIN_DIR)/gemm_wmma_tiled_pipeline_epilogue_bench --check-only
-	$(BIN_DIR)/gemm_wmma_tiled_pipeline_large_bench --check-only
-	$(GEMM_DYNAMIC_TEST) --check-only
 	$(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_bench --check-only
 	@set -e; for binary in $(GEMM_SCHEDULE_TESTS); do "$$binary" --check-only; done
 	$(BIN_DIR)/gemm_cublas_bench --check-only
@@ -646,37 +593,13 @@ sanitize-max-subarray-sum: $(BIN_DIR)/max_subarray_sum_test
 	for tool in initcheck racecheck synccheck; do \
 	  $(COMPUTE_SANITIZER) --tool $$tool --print-limit 20 --error-exitcode 1 $< $(MAX_SUBARRAY_SUM_ARGS) || max_subarray_sum_status=1; \
 	done; exit $$max_subarray_sum_status
-sanitize: all $(GEMM_DYNAMIC_TEST) $(GEMM_SCHEDULE_TESTS)
+sanitize: all $(GEMM_SCHEDULE_TESTS)
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_bench 17 33 19 0
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_bench 65 129 67 0
 	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_bench 65 129 67 0
 	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_bench --check-only
 	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_bench --check-only
 	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_bench --check-only
-	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench --check-only
-	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench --check-only
-	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_bench --check-only
-	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench --check-only
-	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench --check-only
-	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_aligned_swizzled_bench --check-only
-	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench --check-only
-	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench --check-only
-	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_multistage_bench --check-only
-	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_mainloop_bench --check-only
-	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_mainloop_bench --check-only
-	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_mainloop_bench --check-only
-	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_reuse_bench --check-only
-	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_reuse_bench --check-only
-	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_reuse_bench --check-only
-	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_epilogue_bench --check-only
-	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_epilogue_bench --check-only
-	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_epilogue_bench --check-only
-	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_large_bench --check-only
-	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_large_bench --check-only
-	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(BIN_DIR)/gemm_wmma_tiled_pipeline_large_bench --check-only
-	$(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 1 $(GEMM_DYNAMIC_TEST) --check-only
-	$(COMPUTE_SANITIZER) --tool racecheck --error-exitcode 1 $(GEMM_DYNAMIC_TEST) --check-only
-	$(COMPUTE_SANITIZER) --tool synccheck --error-exitcode 1 $(GEMM_DYNAMIC_TEST) --check-only
 	@set -e; for binary in $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_bench $(GEMM_SCHEDULE_TESTS); do \
 	  for tool in memcheck racecheck synccheck; do \
 	    $(COMPUTE_SANITIZER) --tool $$tool --error-exitcode 1 "$$binary" --check-only; \
@@ -777,16 +700,9 @@ help:
 	@echo 'run-max-subarray-sum Check fixed-length maximum window sums; MAX_SUBARRAY_SUM_ARGS="--case NAME" isolates a case'
 	@echo '               MAX_SUBARRAY_SUM_ARGS=--large checks N=50000; --list-cases lists cases'
 	@echo 'sanitize-max-subarray-sum Run memory/leak/initialization/race/synchronization checks; accepts MAX_SUBARRAY_SUM_ARGS'
-	@echo 'check-gemm      Check scalar, tiled, all WMMA variants, and cuBLAS GEMM'
-	@echo 'run-gemm-compare Compare all fourteen GEMMs; GEMM_ARGS="M N K repeats"'
+	@echo 'check-gemm      Check scalar, tiled, representative WMMA stages, and cuBLAS GEMM'
+	@echo 'run-gemm-compare Compare seven GEMM implementations; GEMM_ARGS="M N K repeats"'
 	@echo 'run-gemm-wmma-tiled-pipeline Run async/double-buffered WMMA; uses GEMM_ARGS'
-	@echo 'run-gemm-wmma-tiled-pipeline-aligned Run WMMA with a full/aligned fast path; uses GEMM_ARGS'
-	@echo 'run-gemm-wmma-tiled-pipeline-aligned-swizzled Run XOR shared-layout GEMM; uses GEMM_ARGS'
-	@echo 'run-gemm-wmma-tiled-pipeline-multistage Run GEMM with deeper input/operand buffering; uses GEMM_ARGS'
-	@echo 'run-gemm-wmma-tiled-pipeline-mainloop Run GEMM mainloop scheduling experiment; uses GEMM_ARGS'
-	@echo 'run-gemm-wmma-tiled-pipeline-reuse Run GEMM with the 96x128 reuse tile; uses GEMM_ARGS'
-	@echo 'run-gemm-wmma-tiled-pipeline-epilogue Run GEMM with alpha=1/beta=0 specialization; uses GEMM_ARGS'
-	@echo 'run-gemm-wmma-tiled-pipeline-large Run large-tile/dynamic-shared GEMM experiments; uses GEMM_ARGS'
 	@echo 'run-gemm-wmma-tiled-pipeline-schedule Run distributed GEMM mainloop; uses GEMM_ARGS'
 	@echo 'gemm*_perf      Optional large-shape binaries in BIN_DIR; M N K [iterations|--profile]'
 	@echo 'check-gemm-triton Reuse CUDA GEMM cases for Triton, plus all autotune candidates'
@@ -796,11 +712,11 @@ help:
 	@echo '                 TRITON_BENCH_ARGS="--shape M N K [--verify-only]"; TRITON_CUDA_GEMM selects the CUDA source'
 	@echo '                 Repeat --reference-source src/gemm.triton.py to compare multiple Triton versions together'
 	@echo 'sanitize-gemm-triton Check Triton tails/unaligned pointers with all three sanitizer tools'
-	@echo 'nsys-gemm       Profile all WMMA variants and cuBLAS serially, then print stats'
+	@echo 'nsys-gemm       Profile the WMMA stages and cuBLAS serially, then print stats'
 	@echo '                Set CUDA_VISIBLE_DEVICES, GEMM_ARGS, NSYS_DIR, NSYS_FLAGS as needed'
 	@echo 'nsys-gemm-stats  Print existing reports in NSYS_DIR (default: $(BIN_DIR)/nsys)'
-	@echo 'ncu-gemm-build  Build all fourteen GEMMs with -lineinfo in NCU_BIN_DIR'
-	@echo 'ncu-gemm        Profile all fourteen serially, then export text/CSV and print a summary'
+	@echo 'ncu-gemm-build  Build seven GEMM implementations with -lineinfo in NCU_BIN_DIR'
+	@echo 'ncu-gemm        Profile seven implementations serially, then export text/CSV and print a summary'
 	@echo '                Set CUDA_VISIBLE_DEVICES, GEMM_ARGS, NCU_DIR, NCU_SET, NCU_RUN as needed'
 	@echo 'ncu-gemm-stats  Export existing NCU reports and regenerate comparison.csv (no GPU needed)'
 	@echo 'clean           Remove current architecture build directory'

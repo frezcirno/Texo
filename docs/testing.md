@@ -1022,36 +1022,13 @@ or T4 runtime validation.
 - Matrix-vector and GEMM benchmarks warm up and report the median of five batches
   of repeated launches. They reuse input buffers and exclude host/device copies.
   GEMM timing uses `beta=0` to prevent repeated accumulation into C.
-  `make check-gemm` validates scalar, tiled, all ten WMMA variants, and cuBLAS;
-  `make run-gemm-compare GEMM_ARGS="1024 1024 1024 100"` compares their timings.
-  The 52-case GEMM suite also checks misaligned A/B base pointers on complete
-  tiles, one/two/three full K chunks, multiple output blocks, independently partial
-  M/N/K dimensions, K=0, and unaligned C with aligned A/B. Wide 1024x2048 outputs
-  with K=32/96 cover larger block/warp tile builds, nontrivial alpha/beta, and
-  aligned/unaligned output stores. Additional two/four/five/seven/eight-chunk
-  cases cover short prologues, ring wraparound, and drain for multistage input
-  buffers. Three/five/seven BK=64 chunks also exercise ring wraparound/drain,
-  nontrivial alpha/beta, and unaligned C. The 96x128 tile is checked at its
-  192-block automatic-dispatch boundary with one/three K chunks, alpha/beta,
-  and unaligned C; forced BM=96 builds also cover a non-64-row five-chunk case.
-  Alpha/beta checks vary each scalar independently and initialize C with NaNs
-  for beta=0 on native, tail, K=0, and unaligned-output paths, including beta=-0.
-  The reference ignores old C when beta=0.
-  Four additional 256x256 cases cover one/four/five/seven K chunks, general
-  alpha/beta, NaN old C, and unaligned C for larger tiles. The forced
-  `gemm_wmma_tiled_pipeline_large_dynamic_test` runs the same suite using
-  a 128x256 block, 32x64 warp, four stages, and 96 KiB dynamic shared memory.
-  It is included in `check-gemm`, `check`, and all three sanitizer tools;
-  it is separate from the fourteen default benchmark implementations.
-  The scheduled version adds forced 128x128/BK32 three- and four-stage tests,
-  and a 96 KiB 128x256/BK64 two-stage test with 16 warps. Five further cases
-  cover BK64 one/three/nine-chunk drains and the two automatic grid bands.
-  The shared GEMM suite has 57 cases; all forced tests participate in check
-  and memcheck/racecheck/synccheck. Large-shape optional `*_perf` targets use
-  `benchmarks/gemm.cu` with a cuBLAS FP32-reduction reference; they supplement
-  the independent CPU checks rather than replacing them.
-  `sanitize` runs memcheck,
-  racecheck, and synccheck over the complete suite for all nine pipelined versions.
+  `make check-gemm` validates the representative scalar, tiled, WMMA, pipelined,
+  scheduled, and cuBLAS implementations; `make run-gemm-compare` compares their
+  timings. The shared correctness suite covers tails, multiple output blocks,
+  K=0, alpha/beta behavior, and aligned or unaligned pointers. The scheduled
+  implementation also has forced tile/stage cases in `check-gemm` and sanitizer
+  targets. Large-shape optional `*_perf` targets use `benchmarks/gemm.cu` with a
+  cuBLAS FP32-reduction reference; they supplement the independent CPU checks.
   All use 256-byte-aligned benchmark buffers, with output guards and a separate
   unaligned correctness case. cuBLAS handle creation happens before timing.
   CUDA-event batches include any host submission gaps between GPU operations.

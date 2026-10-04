@@ -6,15 +6,16 @@ constexpr int TILE_SIZE = 16;
 __global__ void gemm(const half *__restrict__ A, // (M, K)
                      const half *__restrict__ B, // (K, N)
                      half *__restrict__ C,       // (M, N)
-                     int M, int N, int K, float alpha, float beta) {
+                     const size_t M, const size_t N, const size_t K,
+                     const float alpha, const float beta) {
   __shared__ half A_tile[TILE_SIZE][TILE_SIZE];
   __shared__ half B_tile[TILE_SIZE][TILE_SIZE];
-  const int n = blockIdx.x * blockDim.x + threadIdx.x;
-  const int m = blockIdx.y * blockDim.y + threadIdx.y;
+  const size_t n = blockIdx.x * blockDim.x + threadIdx.x;
+  const size_t m = blockIdx.y * blockDim.y + threadIdx.y;
   float sum = 0;
-  for (int tb = 0; tb < K; tb += TILE_SIZE) {
-    const int kx = tb + threadIdx.x;
-    const int ky = tb + threadIdx.y;
+  for (int tk = 0; tk < K; tk += TILE_SIZE) {
+    const size_t kx = tk + threadIdx.x;
+    const size_t ky = tk + threadIdx.y;
     A_tile[threadIdx.y][threadIdx.x] =
         (m >= M || kx >= K) ? half(0) : A[m * K + kx];
     B_tile[threadIdx.y][threadIdx.x] =

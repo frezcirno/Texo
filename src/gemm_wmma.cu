@@ -7,14 +7,15 @@ namespace wmma = nvcuda::wmma;
 constexpr int TILE_SIZE = 16;
 
 // Exactly one warp per block; one block computes a 16 x 16 output tile.
-__global__ void gemm(const half *A, const half *B, half *C, int M, int N, int K,
-                     float alpha, float beta) {
+__global__ void gemm(const half *A, const half *B, half *C, const size_t M,
+                     const size_t N, const size_t K, const float alpha,
+                     const float beta) {
   __shared__ __align__(32) half A_tile[TILE_SIZE][TILE_SIZE];
   __shared__ __align__(32) half B_tile[TILE_SIZE][TILE_SIZE];
   __shared__ __align__(32) float sum[TILE_SIZE][TILE_SIZE];
 
-  const int n0 = blockIdx.x * TILE_SIZE;
-  const int m0 = blockIdx.y * TILE_SIZE;
+  const size_t n0 = blockIdx.x * TILE_SIZE;
+  const size_t m0 = blockIdx.y * TILE_SIZE;
 
   wmma::fragment<wmma::matrix_a, TILE_SIZE, TILE_SIZE, TILE_SIZE, half,
                  wmma::row_major>
@@ -25,12 +26,12 @@ __global__ void gemm(const half *A, const half *B, half *C, int M, int N, int K,
   wmma::fragment<wmma::accumulator, TILE_SIZE, TILE_SIZE, TILE_SIZE, float> acc;
   wmma::fill_fragment(acc, 0.0f);
 
-  for (int tb = 0; tb < K; tb += TILE_SIZE) {
+  for (int k = 0; k < K; k += TILE_SIZE) {
     // 256 elements / 32 lanes = 8 elements per lane, for each input tile.
     for (int i = threadIdx.x; i < 256; i += 32) {
-      const int y = i / TILE_SIZE, x = i % TILE_SIZE;
-      const int m = m0 + y, n = n0 + x;
-      const int kx = tb + x, ky = tb + y;
+      const size_t y = i / TILE_SIZE, x = i % TILE_SIZE;
+      const size_t m = m0 + y, n = n0 + x;
+      const size_t kx = k + x, ky = k + y;
       A_tile[y][x] = (m >= M || kx >= K) ? half(0) : A[m * K + kx];
       B_tile[y][x] = (ky >= K || n >= N) ? half(0) : B[ky * N + n];
     }
@@ -46,8 +47,8 @@ __global__ void gemm(const half *A, const half *B, half *C, int M, int N, int K,
   __syncthreads();
 
   for (int i = threadIdx.x; i < 256; i += 32) {
-    const int y = i / TILE_SIZE, x = i % TILE_SIZE;
-    const int m = m0 + y, n = n0 + x;
+    const size_t y = i / TILE_SIZE, x = i % TILE_SIZE;
+    const size_t m = m0 + y, n = n0 + x;
     if (m < M && n < N) {
       const size_t index = m * N + n;
       C[index] =

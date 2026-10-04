@@ -49,21 +49,24 @@ __global__ void gemm_wmma_tiled_pipeline(const half *__restrict__ A,
   static_assert(WM % 16 == 0 && WN % 16 == 0 && BK % 16 == 0,
                 "WMMA dimensions must be multiples of 16");
   static_assert(SKEW >= 0 && SKEW % 16 == 0, "Preserve 32-byte row alignment");
+
   constexpr int WARP_NUM = (BM / WM) * (BN / WN);
   static_assert(WARP_NUM > 0 && WARP_NUM <= 32, "Valid CUDA block size");
-  constexpr int BLOCK_SIZE = WARP_NUM * 32;
-  constexpr int WARP_FRAG_NUM_M = WM / 16, WARP_FRAG_NUM_N = WN / 16;
-  const int warp = threadIdx.x / 32, lane = threadIdx.x % 32;
-  const int warp_in_block_row = (warp / (BN / WN)) * WM;
-  const int warp_in_block_col = (warp % (BN / WN)) * WN;
+
+  constexpr size_t BLOCK_SIZE = WARP_NUM * 32;
+  constexpr size_t WARP_FRAG_NUM_M = WM / 16, WARP_FRAG_NUM_N = WN / 16;
+  const size_t warp = threadIdx.x / 32, lane = threadIdx.x % 32;
+  const size_t warp_in_block_row = (warp / (BN / WN)) * WM;
+  const size_t warp_in_block_col = (warp % (BN / WN)) * WN;
 
   __shared__ __align__(32) half A_tile[2][BM][BK + SKEW];
   __shared__ __align__(32) half B_tile[2][BK][BN + SKEW];
   __shared__ __align__(32) float output[WARP_NUM][16][16];
 
-  const size_t tiles_m = (size_t(M) + BM - 1) / BM;
-  const size_t tiles_n = (size_t(N) + BN - 1) / BN;
-  const size_t tiles_k = (size_t(K) + BK - 1) / BK;
+  const size_t tiles_m = (M + BM - 1) / BM;
+  const size_t tiles_n = (N + BN - 1) / BN;
+  const size_t tiles_k = (K + BK - 1) / BK;
+
   // Flatten output tiles so tall matrices do not exceed the grid.y limit.
   for (size_t tile_id = blockIdx.x; tile_id < tiles_m * tiles_n;
        tile_id += gridDim.x) {
@@ -89,10 +92,10 @@ __global__ void gemm_wmma_tiled_pipeline(const half *__restrict__ A,
       __syncthreads();
     }
 
-    for (size_t t = 0; t < tiles_k; ++t) {
-      const int cur = int(t & 1), next = cur ^ 1;
-      if (t + 1 < tiles_k) {
-        const size_t tb = (t + 1) * BK;
+    for (size_t tk = 0; tk < tiles_k; ++tk) {
+      const size_t cur = tk & 1, next = cur ^ 1;
+      if (tk + 1 < tiles_k) {
+        const size_t tb = (tk + 1) * BK;
         stage_input_tile<BM, BK, BK + SKEW, BLOCK_SIZE>(A_tile[next], A, M, K,
                                                         row0, tb);
         stage_input_tile<BK, BN, BN + SKEW, BLOCK_SIZE>(B_tile[next], B, K, N,
@@ -139,10 +142,10 @@ __global__ void gemm_wmma_tiled_pipeline(const half *__restrict__ A,
                                 wmma::mem_row_major);
         __syncwarp();
         for (int e = lane; e < 256; e += 32) {
-          const int row = e / 16, col = e % 16;
+          const size_t row = e / 16, col = e % 16;
           const size_t m = row0 + warp_in_block_row + i * 16 + row;
           const size_t n = col0 + warp_in_block_col + j * 16 + col;
-          if (m < size_t(M) && n < size_t(N)) {
+          if (m < M && n < N) {
             const size_t index = m * N + n;
             C[index] = alpha * output[warp][row][col] +
                        (beta == 0.0f ? 0.0f : beta * __half2float(C[index]));

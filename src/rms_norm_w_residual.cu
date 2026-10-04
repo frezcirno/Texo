@@ -38,58 +38,38 @@ template <> struct Vector4<double> {
   using type = double4;
 };
 
-template <int BLOCK_SIZE, typename T>
-__global__ void sum_kernel(const T *__restrict__ input1, // (N, C)
-                           const T *__restrict__ input2, // (N, C)
-                           T *__restrict__ output,       // (N,)
-                           const size_t N, const size_t C) {
-  const size_t n = blockIdx.y;
-  const size_t tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
-  const size_t stride = gridDim.x * BLOCK_SIZE;
+__global__ void fused_kernel(const float *x, const float *residual,
+                             const float *weight, float *out, int N, int C,
+                             float eps) {
+  int n = blockIdx.x;
+  int t = threadIdx.x;
 
-  T sum = 0;
-
-  for (int i = tid; i < C; i += stride) {
-    sum += pow2(input1[n * C + i] + input2[n * C + i]);
+  float sum = 0.f;
+  for (int j = t; j < C; j += blockDim.x) {
+    float z = x[n * C + j] + residual[n * C + j];
+    sum += z * z;
   }
 
-  sum = block_sum<BLOCK_SIZE>(sum);
-  if (threadIdx.x == 0) {
-    atomicAdd(&output[n], sum);
+  sum = block_sum<256>(sum);
+
+  // block_sum 的总和只在第 0 个线程可靠；放到共享内存，
+  // 让整个 CTA 后续都能使用。
+  __shared__ float inv_rms;
+  if (t == 0)
+    inv_rms = rsqrtf(sum / C + eps);
+  __syncthreads();
+
+  for (int j = t; j < C; j += blockDim.x) {
+    float z = x[n * C + j] + residual[n * C + j];
+    out[n * C + j] = z * inv_rms * weight[j];
   }
 }
 
-template <typename T>
-__global__ void scale_kernel(const T *__restrict__ input1, // (N, C)
-                             const T *__restrict__ input2, // (N, C)
-                             const T *__restrict__ weight, // (C,)
-                             T *__restrict__ rms,          // (N,)
-                             T *__restrict__ output,       // (N, C)
-                             const size_t N, const size_t C, float eps) {
-  const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-  if (tid >= C)
-    return;
-  const size_t n = blockIdx.y;
-  output[n * C + tid] = weight[tid] *
-                        (input1[n * C + tid] + input2[n * C + tid]) /
-                        sqrt(rms[n] / C + eps);
-}
 // x, residual, weight, out are device pointers
 extern "C" void solve(const float *x,        // (N, C)
                       const float *residual, // (N, C)
                       const float *weight,   // (C,)
                       float *out,            // (N, C)
                       int N, int C, float eps) {
-  float *rms; // (N,)
-  cudaMalloc(&rms, N * sizeof(float));
-  cudaMemset(rms, 0, N * sizeof(float));
-
-  // rms = sum(input^2)
-  sum_kernel<256><<<dim3((C + 255) / 256, N), 256>>>(x, residual, rms, N, C);
-
-  // y = gamma * x / sqrt(rms/N + eps) + beta
-  scale_kernel<<<dim3((C + 255) / 256, N), 256>>>(x, residual, weight, rms, out,
-                                                  N, C, eps);
-
-  cudaFree(rms);
+  fused_kernel<<<N, 256>>>(x, residual, weight, out, N, C, eps);
 }

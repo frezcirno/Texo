@@ -6,7 +6,8 @@ namespace wmma = nvcuda::wmma;
 
 // BM x BN: output per block; BK: inputs staged per K iteration.
 // WM x WN: output per warp, made up of 16 x 16 accumulator fragments.
-template <int BM, int BN, int BK, int WM, int WN, int SKEW = 0>
+template <size_t BM, size_t BN, size_t BK, size_t WM, size_t WN,
+          size_t SKEW = 0>
 __global__ void gemm_wmma_tiled(const half *__restrict__ A, // (M, K)
                                 const half *__restrict__ B, // (K, N)
                                 half *__restrict__ C,       // (M, N)
@@ -15,14 +16,17 @@ __global__ void gemm_wmma_tiled(const half *__restrict__ A, // (M, K)
   static_assert(WM % 16 == 0 && WN % 16 == 0 && BK % 16 == 0,
                 "WMMA dimensions must be multiples of 16");
   static_assert(SKEW >= 0 && SKEW % 16 == 0, "Preserve 32-byte row alignment");
+
   constexpr int WARP_NUM = (BM / WM) * (BN / WN);
   static_assert(WARP_NUM > 0 && WARP_NUM <= 32, "Valid CUDA block size");
+
   constexpr int BLOCK_SIZE = WARP_NUM * 32;
   constexpr int WARP_FRAG_NUM_M = WM / 16, WARP_FRAG_NUM_N = WN / 16;
-  const int tid = threadIdx.x, warp = tid / 32, lane = tid % 32;
-  const int warp_in_block_row = (warp / (BN / WN)) * WM;
-  const int warp_in_block_col = (warp % (BN / WN)) * WN;
-  const int row0 = blockIdx.y * BM, col0 = blockIdx.x * BN;
+
+  const size_t tid = threadIdx.x, warp = tid / 32, lane = tid % 32;
+  const size_t warp_in_block_row = (warp / (BN / WN)) * WM;
+  const size_t warp_in_block_col = (warp % (BN / WN)) * WN;
+  const size_t row0 = blockIdx.y * BM, col0 = blockIdx.x * BN;
 
   // Optional row padding changes the shared-memory bank mapping.
   __shared__ __align__(32) half A_tile[BM][BK + SKEW];
@@ -39,18 +43,18 @@ __global__ void gemm_wmma_tiled(const half *__restrict__ A, // (M, K)
     }
   }
 
-  for (int tb = 0; tb < K; tb += BK) {
+  for (int tk = 0; tk < K; tk += BK) {
     // All warps cooperate on loads; even threads outside C load or zero-pad.
     for (int i = tid; i < BM * BK; i += BLOCK_SIZE) {
-      const int row = i / BK, k = i % BK;
-      A_tile[row][k] = (row0 + row < M && tb + k < K)
-                           ? A[size_t(row0 + row) * K + tb + k]
+      const size_t row = i / BK, k = i % BK;
+      A_tile[row][k] = (row0 + row < M && tk + k < K)
+                           ? A[(row0 + row) * K + tk + k]
                            : half(0.0f);
     }
     for (int i = tid; i < BK * BN; i += BLOCK_SIZE) {
-      const int k = i / BN, col = i % BN;
-      B_tile[k][col] = (tb + k < K && col0 + col < N)
-                           ? B[size_t(tb + k) * N + col0 + col]
+      const size_t k = i / BN, col = i % BN;
+      B_tile[k][col] = (tk + k < K && col0 + col < N)
+                           ? B[(tk + k) * N + col0 + col]
                            : half(0.0f);
     }
     __syncthreads();
