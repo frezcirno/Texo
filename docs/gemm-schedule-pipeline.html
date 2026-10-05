@@ -98,7 +98,7 @@
     .pack.source { background: var(--orange-soft); color: var(--orange); outline: 2px solid var(--orange); font-weight: 750; }
     .pack.target { background: var(--blue-soft); color: var(--blue); }
     .pack.destination { background: var(--blue-soft); color: var(--blue); outline: 2px solid var(--blue); font-weight: 750; }
-    .bank-head { color: var(--muted); font: 9px ui-monospace, monospace; text-align: center; }
+    .bank-head { align-self: center; color: var(--muted); font: 9px ui-monospace, monospace; text-align: center; }
     .swizzle-arrow { color: var(--muted); font-size: 24px; align-self: center; }
     .swizzle-caption { margin-bottom: 5px; color: var(--muted); font-size: 13px; }
     .swizzle-result { margin-top: 8px; font-size: 13px; }
@@ -165,13 +165,22 @@
       .intro { margin: 0 0 2px; max-width: none; }
       .intro p { font-size: 13px; }
       .panel { padding: 8px 9px; margin-top: 5px; border-radius: 10px; }
-      .content-grid { flex: 1; min-height: 0; margin-top: 5px; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; }
+      .content-grid { flex: 1; min-height: 0; margin-top: 5px; grid-template-columns: repeat(12, minmax(0, 1fr)); grid-template-rows: minmax(0, 1.1fr) minmax(0, 1fr); gap: 6px; }
       .content-grid > .panel { min-height: 0; overflow: auto; }
-      .p-maps { grid-column: 1 / 3; }
-      .p-buffers { grid-column: 3 / 5; }
-      .p-swizzle { grid-column: 1 / 3; }
-      .p-warps { grid-column: 3 / 5; }
-      .p-timeline { grid-column: 1 / -1; }
+      .p-maps { grid-area: 1 / 1 / 2 / 6; }
+      .p-buffers { grid-area: 1 / 6 / 2 / 9; }
+      .p-warps { grid-area: 1 / 9 / 2 / 13; }
+      .p-swizzle { grid-area: 2 / 1 / 3 / 6; }
+      .p-timeline { grid-area: 2 / 6 / 3 / 13; }
+      .p-maps .thread-note { display: none; }
+      .p-timeline .compute-layout { grid-template-columns: 1fr; gap: 4px; }
+      .p-timeline .regs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .p-timeline #substepHeading { font-size: 11px; }
+      .p-swizzle .swizzle-demo { gap: 8px; }
+      .p-warps .mma-path { grid-template-columns: 1fr auto 1fr auto 1.15fr auto 1fr; }
+      .p-warps .path-node, .p-warps .tensor-core { font-size: 10px; }
+      .p-warps .tensor-core b { font-size: 12px; }
+      .legend span { white-space: nowrap; }
       .controls { gap: 4px 8px; }
       select, button { padding: 3px 7px; font-size: 13px; }
       label { gap: 2px; font-size: 12px; }
@@ -183,12 +192,14 @@
       .chunk { margin-top: 1px; font-size: 14px; }
       .buffer small { font-size: 10px; }
       .legend { gap: 9px; margin: 3px 0 5px; font-size: 11px; }
-      .map-cell { min-height: 17px; font-size: 9px; }
+      .map-cell { min-height: 14px; font-size: 9px; line-height: 1; }
+      .map-grid { gap: 2px; }
       .maps { gap: 4px 10px; }
       .map h3 { font-size: 14px; }
       .map .dims, .map-axis { margin-bottom: 2px; font-size: 10px; }
       .thread-note, .note, .swizzle-result { margin-top: 4px; font-size: 11px; line-height: 1.3; }
-      .p-swizzle > p { font-size: 11px; line-height: 1.3; }
+      .p-swizzle > p:not(.swizzle-result) { font-size: 11px; line-height: 1.3; }
+      .p-swizzle .section-title .pill { display: none; }
       .swizzle-controls { margin: 4px 0; gap: 7px; }
       .pack { min-height: 15px; font-size: 9px; }
       .swizzle-caption { margin-bottom: 2px; font-size: 11px; }
@@ -283,7 +294,7 @@
         <span id="swizzleFormula" class="pill" aria-live="polite"></span>
       </div>
       <div class="swizzle-demo">
-        <div><div class="swizzle-caption">逻辑 tile（前 8 行）</div><div id="logicalPacks" class="pack-grid"></div></div>
+        <div><div id="swizzleWindow" class="swizzle-caption">逻辑 tile（前 8 行）</div><div id="logicalPacks" class="pack-grid"></div></div>
         <div class="swizzle-arrow" aria-hidden="true">→</div>
         <div><div class="swizzle-caption">共享内存物理槽（格内为来源 pack）</div><div id="physicalPacks" class="pack-grid"></div></div>
       </div>
@@ -425,7 +436,7 @@
     const cells = [];
     for (let r = 0; r < rows; r++) for (let col = 0; col < cols; col++) {
       const cls = hit(r, col);
-      cells.push(`<div class="map-cell ${cls}" title="${name}[${r},${col}]">${name}${r},${col}</div>`);
+      cells.push(`<div class="map-cell ${cls}" title="${name}[${r},${col}]">${r},${col}</div>`);
     }
     return `<div class="map ${name.toLowerCase()}"><h3>${name}</h3><div class="dims">${dims}</div><div class="map-axis">${axis}</div>` +
       `<div class="map-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${cells.join('')}</div></div>`;
@@ -580,20 +591,28 @@
     const source = new Map();
     for (let r = 0; r < 8; r++) for (let cc = 0; cc < P; cc++) source.set(phys(r, cc), [r, cc]);
     const colDest = new Set(Array.from({length: 8}, (_, r) => phys(r, col)));
-    const style = `grid-template-columns:repeat(${P},minmax(0,1fr))`;
-    const heads = Array.from({length: P}, (_, i) => `<span class="bank-head">${i % 8}</span>`).join('');
-    let logical = '', physical = '';
-    for (let r = 0; r < 8; r++) for (let cc = 0; cc < P; cc++) {
-      const cls = r === row && cc === col ? 'source' : cc === col ? 'column' : '';
-      logical += `<button type="button" class="pack ${cls}" data-r="${r}" data-c="${cc}" title="逻辑 r${r} c${cc}">${cc === 0 ? `r${r}·` : ''}c${cc}</button>`;
-      const p = r * P + cc, [sr, sc] = source.get(p);
-      const pcls = p === dest ? 'destination' : colDest.has(p) ? 'target' : '';
-      physical += `<div class="pack ${pcls}" title="物理槽 ${p}（bank 组 ${p % 8}）← 逻辑 r${sr} c${sc}">${sr === r ? '' : `r${sr}`}c${sc}</div>`;
+    // XOR only touches the low 3 pack bits, so for P >= 8 a pack stays inside its 128 B window.
+    const W = Math.min(P, 8), c0 = Math.floor(col / W) * W;
+    const style = `grid-template-columns:22px repeat(${W},minmax(0,1fr))`;
+    const head = label => `<span class="bank-head">${label}</span>` +
+      Array.from({length: W}, (_, i) => `<span class="bank-head">${label === 'bank' ? (c0 + i) % 8 : `c${c0 + i}`}</span>`).join('');
+    let logical = head(''), physical = head('bank');
+    for (let r = 0; r < 8; r++) {
+      logical += `<span class="bank-head">r${r}</span>`;
+      physical += `<span class="bank-head">r${r}</span>`;
+      for (let cc = c0; cc < c0 + W; cc++) {
+        const cls = r === row && cc === col ? 'source' : cc === col ? 'column' : '';
+        logical += `<button type="button" class="pack ${cls}" data-r="${r}" data-c="${cc}" title="逻辑 r${r} c${cc}">c${cc}</button>`;
+        const p = r * P + cc, [sr, sc] = source.get(p);
+        const pcls = p === dest ? 'destination' : colDest.has(p) ? 'target' : '';
+        physical += `<div class="pack ${pcls}" title="物理槽 ${p}（bank 组 ${p % 8}）← 逻辑 r${sr} c${sc}">${sr === r ? '' : `r${sr}`}c${sc}</div>`;
+      }
     }
     el.logical.style.cssText = style;
     el.physical.style.cssText = style;
     el.logical.innerHTML = logical;
-    el.physical.innerHTML = `<div class="pack-grid" style="${style};grid-column:1/-1">${heads}</div>` + physical;
+    el.physical.innerHTML = physical;
+    $('swizzleWindow').textContent = P > 8 ? `逻辑 tile（前 8 行，列 c${c0}–c${c0 + 7}，共 ${P} 列）` : `逻辑 tile（前 8 行，共 ${P} 列）`;
     el.swFormula.textContent = `(${row}·${P} + ${col}) XOR ${row & 7} = 槽 ${dest}（行 ${Math.floor(dest / P)}，列 ${dest % P}，bank 组 ${dest % 8}）`;
 
     const swz = Array.from({length: 8}, (_, r) => phys(r, col) % 8);
