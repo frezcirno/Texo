@@ -1,10 +1,10 @@
 # Distributed copies, operand scheduling, and compact addresses
 
-`src/gemm_wmma_tiled_pipeline_schedule.cu` is an independent successor to
-`gemm_wmma_tiled_pipeline_large.cu`. The investigation changed the mainloop in
-three steps: distribute asynchronous copies through MMA, overlap fragment loads
-and stage transitions with MMA, then reduce shared/global address bookkeeping.
-The XOR shared layout and alpha=1/beta=0 epilogue are retained.
+`src/gemm_wmma_tiled_pipeline_schedule.cu` contains the final scheduled WMMA
+implementation. Its mainloop distributes asynchronous copies through MMA,
+overlaps fragment loads and stage transitions with MMA, and reduces
+shared/global address bookkeeping. The XOR shared layout and alpha=1/beta=0
+epilogue are retained.
 
 ## Contract and configuration
 
@@ -14,20 +14,11 @@ C by beta. Beta=0, including negative zero, ignores old C. Native tiles require
 complete dimensions and 16-byte-aligned A/B; C may be only half-aligned. Tails
 and unaligned A/B use the fixed 64x64 generic WMMA pipeline.
 
-`GEMM_SCHEDULE` selects cumulative experiments:
-
-| Value | Mainloop |
-|---|---|
-| 0 | Previous version's loop and addresses |
-| 1 | Distribute next-stage A/B copies among MMA row groups |
-| 2 | Also carry operand registers across stages and interleave fragment loads |
-| 3, default | Also use 32-bit shared addresses and a compact global-copy iterator |
-
-`GEMM_INTERLEAVE_LOADS=0` isolates the stage-boundary change in step 2.
-`GEMM_ADDRESS_MODE=1` isolates 32-bit operand addressing from compact global
-copy pointers; mode 2 enables both. The default is mode 2 for schedule 3 and
-mode 0 for earlier schedules. `GEMM_REGISTER_PIPELINE=0` disables register
-prefetch and the early stage transition. BK=16 retains the original stage
+This source keeps only the final schedule: next-stage A/B copies are distributed
+through the MMA loop, operand fragments are prefetched across stages, and shared
+memory addressing always uses the compact 32-bit path when the copy layout
+allows it. Interleaved fragment loads, register prefetch, and the early stage
+transition are always enabled when BK>=32. BK=16 retains the original stage
 boundary because it has only one MMA K group.
 
 Explicit `GEMM_BM/BN/BK/WM/WN/STAGES` overrides disable automatic tile selection
@@ -244,18 +235,6 @@ make -j3 build/sm_80/gemm_wmma_tiled_pipeline_large_perf \
 CUDA_VISIBLE_DEVICES=0 build/sm_80/gemm_wmma_tiled_pipeline_large_perf 4096 4096 4096
 CUDA_VISIBLE_DEVICES=0 build/sm_80/gemm_wmma_tiled_pipeline_schedule_perf 4096 4096 4096
 CUDA_VISIBLE_DEVICES=0 build/sm_80/gemm_cublas_perf 4096 4096 4096
-```
-
-Reproduce the controlled fixed-tile steps with separate build directories:
-
-```sh
-for step in 0 1 2 3; do
-  make BIN_DIR="build/sm_80/schedule-$step" \
-    NVCCFLAGS="-O3 -std=c++14 -arch=sm_80 -lineinfo -DGEMM_SCHEDULE=$step \
-      -DGEMM_BM=128 -DGEMM_BN=128 -DGEMM_BK=32 -DGEMM_WM=64 -DGEMM_WN=64 \
-      -DGEMM_STAGES=3 -DGEMM_MULTISTAGE_MIN_BLOCKS=2" \
-    "build/sm_80/schedule-$step/gemm_wmma_tiled_pipeline_schedule_perf"
-done
 ```
 
 The existing Makefile NSYS/NCU targets include the new implementation. For a
