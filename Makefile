@@ -114,6 +114,10 @@ endif
 
 all: $(BINARIES)
 compile-kernels: $(KERNEL_OBJECTS)
+# Reference GEMMs use arch-specific PTX (cp.async/tf32 mma, wgmma/TMA); always
+# compile them for the arch they target so builds for older GPUs still pass.
+$(BIN_DIR)/kernels/gemm_fp32_ref_ampere.o: override NVCC_ARCH := sm_80
+$(BIN_DIR)/kernels/gemm_fp32_ref_hopper.o: override NVCC_ARCH := sm_90a
 
 $(BIN_DIR) $(BIN_DIR)/kernels:
 	mkdir -p $@

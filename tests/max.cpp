@@ -17,7 +17,7 @@
     }                                                                       \
   } while (0)
 
-extern "C" void max_kernel(const float *input, float *output, int N);
+extern "C" void solve(const float *input, float *output, int N);
 
 using MaxFn = void (*)(const float *, float *, int);
 
@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
               static_cast<long long>(sentinel_idx));
   std::printf("  host reference max = %.6f\n", host_result);
 
-  bool passed = bench("max_kernel", max_kernel, device_input, device_output, N, repeat,
+  bool passed = bench("max_kernel", solve, device_input, device_output, N, repeat,
         host_result);
 
   CUDA_CHECK(cudaFree(device_input));

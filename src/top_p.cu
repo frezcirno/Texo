@@ -13,5 +13,5 @@ extern "C" void solve(const float *logits, // (vocab_size,)
                       const int *seed,     // (1,)
                       int *sampled_token,  // (N,)
                       int vocab_size) {
-  top_p_kernel<<<>>>(logits, p, seed, sampled_token, vocab_size);
+  top_p_kernel<<<1, 1>>>(logits, p, seed, sampled_token, vocab_size);
 }
