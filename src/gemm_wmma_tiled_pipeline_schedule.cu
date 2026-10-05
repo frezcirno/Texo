@@ -64,7 +64,7 @@ __global__ void gemm_generic(const half *__restrict__ A,
                 "WMMA dimensions must be multiples of 16");
   // Fragment origins are multiples of 16 rows/columns and remain 32-byte
   // aligned; WMMA's half stride and each async copy need 16-byte alignment.
-  static_assert(SKEW >= 0 && SKEW % 8 == 0, "Preserve 16-byte row alignment");
+  static_assert(SKEW % 8 == 0, "Preserve 16-byte row alignment");
 
   constexpr size_t WARP_NUM = (BM / WM) * (BN / WN);
   static_assert(WARP_NUM > 0 && WARP_NUM <= 32, "Valid CUDA block size");

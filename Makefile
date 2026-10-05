@@ -21,7 +21,8 @@ PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS) $(DOT_TESTS) lr_newton_test
 GEMM_BENCHES := gemm_bench gemm_tiled_bench gemm_wmma_bench gemm_wmma_tiled_bench \
                 gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_schedule_bench \
                 gemm_cublas_bench
-PROGRAMS += $(filter-out gemm_bench,$(GEMM_BENCHES))
+PROGRAMS += $(filter-out gemm_bench,$(GEMM_BENCHES)) gemm_fp32_bench \
+            gemm_fp32_split_128_test gemm_fp32_split_64_test
 GEMM_SCHEDULE_TESTS := $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_fixed_test \
                        $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_four_test \
                        $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_dynamic_test
@@ -184,6 +185,14 @@ $(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_dynamic_test: tests/gemm.cu src/gem
 	  -DGEMM_MULTISTAGE_MIN_BLOCKS=1 $^ -o $@
 $(BIN_DIR)/gemm_cublas_bench: tests/gemm.cu src/gemm_cublas.cu | $(BIN_DIR)
 	$(NVCC) $(NVCCFLAGS) $^ -o $@ -lcublas
+$(BIN_DIR)/gemm_fp32_bench: tests/gemm_fp32.cu src/gemm_fp32.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) $^ -o $@
+# Automatic dispatch uses 128x64 tiles. Force the other tiles with split-K
+# so small CPU-reference cases cover their atomic epilogues too.
+$(BIN_DIR)/gemm_fp32_split_128_test: tests/gemm_fp32.cu src/gemm_fp32.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -DGEMM_FP32_TILE=1 -DGEMM_FP32_SPLIT=3 $^ -o $@
+$(BIN_DIR)/gemm_fp32_split_64_test: tests/gemm_fp32.cu src/gemm_fp32.cu | $(BIN_DIR)
+	$(NVCC) $(NVCCFLAGS) -DGEMM_FP32_TILE=3 -DGEMM_FP32_SPLIT=7 $^ -o $@
 # Optional large-shape timings avoid the cubic CPU reference in *_bench.
 # Keep CPU correctness in make check; these validate against cuBLAS first.
 $(BIN_DIR)/gemm%_perf: benchmarks/gemm.cu src/gemm%.cu | $(BIN_DIR)
@@ -424,6 +433,9 @@ check: all $(GEMM_SCHEDULE_TESTS)
 	$(BIN_DIR)/gemm_wmma_tiled_pipeline_schedule_bench --check-only
 	@set -e; for binary in $(GEMM_SCHEDULE_TESTS); do "$$binary" --check-only; done
 	$(BIN_DIR)/gemm_cublas_bench --check-only
+	$(BIN_DIR)/gemm_fp32_bench --check-only
+	$(BIN_DIR)/gemm_fp32_split_128_test --check-only
+	$(BIN_DIR)/gemm_fp32_split_64_test --check-only
 	$(BIN_DIR)/cat_ce_test
 	$(BIN_DIR)/mse_test 1025
 	$(BIN_DIR)/gauss_blur_test

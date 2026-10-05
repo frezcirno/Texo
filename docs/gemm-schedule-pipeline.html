@@ -35,146 +35,180 @@
     h1 { margin: 0 0 4px; font-size: clamp(22px, 3vw, 29px); letter-spacing: -.03em; }
     h2 { margin: 0 0 8px; font-size: 16px; }
     p { margin: 0; color: var(--muted); }
-    .intro { margin-bottom: 10px; max-width: 780px; }
+    code, .formula { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; color: var(--ink); }
+    .intro { margin-bottom: 10px; max-width: 860px; }
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-top: 10px; }
-    .content-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+    .content-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; margin-top: 10px; }
     .content-grid > .panel { margin-top: 0; }
-    .content-grid > .panel.wide { grid-column: 1 / -1; }
+    .p-timeline { grid-column: 1 / -1; }
     .controls { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: end; }
     label { display: grid; gap: 5px; color: var(--muted); font-size: 13px; }
     select, button { color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; font: inherit; }
     button { cursor: pointer; font-weight: 650; }
     button:hover, select:hover { border-color: var(--blue); }
+    button:focus-visible, select:focus-visible, .pack:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
     button.primary { color: #fff; border-color: var(--blue); background: #3976e8; }
     @media (prefers-color-scheme: dark) { button.primary { color: #101725; background: var(--blue); } }
-    .controls .actions { display: flex; gap: 8px; margin-left: auto; }
+    .controls .actions { display: flex; gap: 8px; margin-left: auto; align-items: center; }
+    .kbd-hint { color: var(--muted); font-size: 12px; }
     .readout { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
     .pill { background: var(--gray-soft); color: var(--muted); padding: 4px 9px; border-radius: 999px; font-size: 13px; }
     .pill strong { color: var(--ink); }
-    .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 10px 0 15px; color: var(--muted); font-size: 13px; }
+    .pill.now { background: var(--blue-soft); color: var(--blue); }
+    .pill.now strong { color: var(--blue); }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 12px; color: var(--muted); font-size: 13px; }
     .dot { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 3px; vertical-align: -1px; }
-    .dot.compute { background: var(--blue); } .dot.copy { background: var(--orange); } .dot.ready { background: var(--green); }
+    .dot.compute { background: var(--blue); } .dot.copy { background: var(--orange); } .dot.ready { background: var(--green); } .dot.idle { background: var(--gray-soft); border: 1px solid var(--line); }
+    .section-title { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+
+    /* Shared-memory ring buffer */
     .buffers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-    .buffer { min-height: 94px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); transition: border-color .2s, background .2s, transform .2s; }
+    .buffer { min-height: 94px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); transition: border-color .2s, background .2s; }
     .buffer.current { border: 2px solid var(--blue); background: var(--blue-soft); }
     .buffer.incoming { border: 2px dashed var(--orange); background: var(--orange-soft); }
-    .buffer.ready { border-color: var(--green); background: var(--green-soft); }
+    .buffer.ready { border: 2px solid var(--green); background: var(--green-soft); }
+    .buffer.pending { border: 2px dashed var(--green); }
+    .buffer.released { border-style: dashed; opacity: .75; }
     .buffer-top { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; }
-    .role { color: var(--muted); font-size: 12px; }
+    .role { color: var(--muted); font-size: 12px; font-weight: 600; text-align: right; }
     .chunk { margin-top: 5px; font-size: 15px; font-weight: 750; }
     .buffer small { display: block; margin-top: 2px; color: var(--muted); font: 11px/1.35 ui-monospace, monospace; }
     .buffer .tile-pair { color: var(--ink); }
-    .matrix-pair { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; margin-top: 12px; }
-    .matrix { border: 1px solid var(--line); border-radius: 10px; padding: 11px; text-align: center; background: var(--bg); }
-    .matrix b { display: block; font-size: 18px; }
-    .times { color: var(--muted); font-size: 20px; }
-    .maps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto 1fr; grid-template-areas: ". b" "a c"; gap: 14px; align-items: start; }
+
+    /* Whole-GEMM tile maps */
+    .maps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: ". b" "a c"; gap: 14px; align-items: start; }
     .map { min-width: 0; }
-    .map:nth-child(1) { grid-area: a; }
-    .map:nth-child(2) { grid-area: b; }
-    .map:nth-child(3) { grid-area: c; }
+    .map.a { grid-area: a; } .map.b { grid-area: b; } .map.c { grid-area: c; }
     .map h3 { margin: 0 0 2px; font-size: 16px; }
     .map .dims { margin-bottom: 8px; color: var(--muted); font-size: 12px; }
     .map-axis { margin-bottom: 5px; color: var(--muted); font-size: 11px; }
     .map-grid { display: grid; gap: 3px; }
-    .map-cell { min-width: 0; min-height: 24px; display: grid; place-items: center; border-radius: 4px; background: var(--gray-soft); color: var(--muted); font-size: 10px; }
-    .map-cell.selected { background: var(--orange-soft); color: var(--orange); outline: 1px solid var(--orange); font-weight: 750; }
+    .map-cell { min-width: 0; min-height: 24px; display: grid; place-items: center; border-radius: 4px; background: var(--gray-soft); color: var(--muted); font-size: 10px; overflow: hidden; white-space: nowrap; }
+    .map-cell.selected { background: var(--orange-soft); color: var(--orange); outline: 2px solid var(--orange); font-weight: 750; }
+    .map-cell.loading { color: var(--orange); outline: 1px dashed var(--orange); }
     .map-cell.output { background: var(--blue-soft); color: var(--blue); outline: 2px solid var(--blue); font-weight: 750; }
-    .swizzle-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 12px 0; }
-    .swizzle-demo { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); align-items: center; gap: 14px; }
-    .pack-grid { display: grid; grid-template-columns: repeat(8, minmax(0,1fr)); gap: 4px; }
-    .pack { min-height: 38px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 6px; background: var(--gray-soft); color: var(--muted); font: 12px ui-monospace, monospace; }
+
+    /* Swizzle */
+    .swizzle-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 10px 0; }
+    .swizzle-demo { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); align-items: start; gap: 12px; }
+    .pack-grid { display: grid; gap: 3px; }
+    .pack { min-width: 0; min-height: 24px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; background: var(--gray-soft); color: var(--muted); font: 10px ui-monospace, monospace; overflow: hidden; white-space: nowrap; }
+    button.pack { padding: 0; font-weight: 400; }
+    .pack.column { background: var(--orange-soft); color: var(--orange); }
     .pack.source { background: var(--orange-soft); color: var(--orange); outline: 2px solid var(--orange); font-weight: 750; }
+    .pack.target { background: var(--blue-soft); color: var(--blue); }
     .pack.destination { background: var(--blue-soft); color: var(--blue); outline: 2px solid var(--blue); font-weight: 750; }
-    .swizzle-arrow { color: var(--muted); font-size: 24px; text-align: center; }
-    .swizzle-caption { margin-bottom: 7px; color: var(--muted); font-size: 13px; }
+    .bank-head { color: var(--muted); font: 9px ui-monospace, monospace; text-align: center; }
+    .swizzle-arrow { color: var(--muted); font-size: 24px; align-self: center; }
+    .swizzle-caption { margin-bottom: 5px; color: var(--muted); font-size: 13px; }
+    .swizzle-result { margin-top: 8px; font-size: 13px; }
+    .ok { color: var(--green); font-weight: 700; }
+    .bad { color: var(--orange); font-weight: 700; }
+
+    /* Warps */
     .warp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
     .warp { border: 1px solid var(--line); border-radius: 10px; padding: 9px; }
-    .warp-title { display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; }
-    .lanes { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; margin-top: 7px; }
-    .lane { height: 16px; display: grid; place-items: center; border-radius: 3px; background: var(--gray-soft); color: var(--muted); font: 10px ui-monospace, monospace; }
-    .lane.active { background: var(--blue-soft); color: var(--blue); }
+    .warp-title { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0 8px; font-size: 13px; font-weight: 700; }
+    .warp-title span:last-child { color: var(--muted); font-weight: 600; }
+    .lanes { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; margin-top: 7px; }
+    .lane { height: 14px; display: grid; place-items: center; border-radius: 3px; background: var(--blue-soft); color: var(--blue); font: 9px ui-monospace, monospace; }
     .thread-note { margin-top: 12px; font-size: 13px; }
-    .mma-path { display: grid; grid-template-columns: 1fr auto 1fr auto 1.2fr auto 1fr; align-items: center; gap: 9px; margin-top: 16px; }
+    .mma-path { display: grid; grid-template-columns: 1fr auto 1fr auto 1.2fr auto 1fr; align-items: center; gap: 9px; margin-top: 14px; }
     .path-node { min-height: 76px; display: grid; place-content: center; text-align: center; border: 1px solid var(--line); border-radius: 10px; padding: 9px; background: var(--bg); }
     .path-node b { display: block; }
     .path-node small { color: var(--muted); }
     .path-arrow { color: var(--muted); font-size: 21px; }
-    .tensor-core { min-height: 92px; border: 2px solid var(--orange); background: var(--orange-soft); border-radius: 13px; text-align: center; padding: 11px 8px; }
+    .tensor-core { min-height: 92px; display: grid; place-content: center; border: 2px solid var(--orange); background: var(--orange-soft); border-radius: 13px; text-align: center; padding: 11px 8px; }
     .tensor-core b { color: var(--orange); font-size: 17px; }
     .tensor-core small { display: block; color: var(--muted); }
-    .compute-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .substeps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
-    .substep { border: 1px solid var(--line); border-radius: 10px; padding: 10px 7px; text-align: center; background: var(--bg); color: var(--muted); font-size: 13px; }
-    .substep.active { color: var(--ink); border: 2px solid var(--blue); background: var(--blue-soft); }
-    .substep.prefetch { border-color: var(--orange); }
-    .timeline { display: grid; gap: 7px; }
-    .tick { display: grid; grid-template-columns: 76px 1fr 1fr; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
-    .bar { min-height: 28px; display: grid; place-items: center; border-radius: 6px; background: var(--gray-soft); }
+
+    /* Mainloop timeline */
+    .compute-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2.6fr); gap: 16px; }
+    .regs { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 8px; }
+    .reg { border: 1px solid var(--line); border-radius: 10px; padding: 8px; background: var(--bg); text-align: center; font-size: 13px; color: var(--muted); }
+    .reg b { display: block; color: var(--ink); }
+    .reg.read { border: 2px solid var(--blue); background: var(--blue-soft); }
+    .reg.load { border: 2px dashed var(--orange); background: var(--orange-soft); }
+    .timeline { display: grid; gap: 5px; }
+    .tick { display: grid; grid-template-columns: 70px repeat(3, minmax(0, 1fr)); gap: 6px; align-items: stretch; font-size: 12px; color: var(--muted); opacity: .55; transition: opacity .2s; }
+    .tick.head { opacity: 1; align-items: end; }
+    .tick.active { opacity: 1; }
+    .tick.active > span:first-child { color: var(--ink); font-weight: 750; }
+    .tick > span:first-child { align-self: center; }
+    .bar { min-height: 28px; display: grid; place-items: center; padding: 3px 6px; border-radius: 6px; background: var(--gray-soft); text-align: center; line-height: 1.25; }
     .bar.mma { background: var(--blue-soft); color: var(--blue); }
+    .bar.ldm { background: var(--green-soft); color: var(--green); }
     .bar.async { background: var(--orange-soft); color: var(--orange); }
-    .bar.sync { background: var(--green-soft); color: var(--green); }
-    .formula { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--ink); }
-    .note { margin-top: 12px; font-size: 13px; }
-    .section-title { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .bar.sync { background: var(--green-soft); color: var(--green); outline: 1px solid var(--green); }
+    .bar.async.sync { background: linear-gradient(90deg, var(--orange-soft) 55%, var(--green-soft) 55%); color: var(--ink); outline: 1px solid var(--green); }
+    .tick.active .bar { box-shadow: inset 0 0 0 2px currentColor; }
+    .note { margin-top: 10px; font-size: 13px; }
+
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
     @media (max-width: 700px) {
       .content-grid { grid-template-columns: 1fr; }
-      .content-grid > .panel.wide { grid-column: auto; }
       .compute-layout { grid-template-columns: 1fr; }
       .maps { grid-template-columns: 1fr; grid-template-areas: "a" "b" "c"; }
       .mma-path { grid-template-columns: 1fr; }
       .path-arrow { transform: rotate(90deg); justify-self: center; }
-      .controls .actions { margin-left: 0; }
+      .swizzle-demo { grid-template-columns: 1fr; }
+      .swizzle-arrow { transform: rotate(90deg); justify-self: center; }
+      .tick { grid-template-columns: 52px repeat(3, minmax(0, 1fr)); font-size: 11px; }
+      .controls .actions { margin-left: 0; flex-wrap: wrap; }
     }
     @media (max-width: 420px) { main { padding: 12px 9px 20px; } .panel { padding: 10px; } }
     /* Compact 16:9 presentation layout: keep the complete kernel overview on one slide. */
     @media (min-width: 701px) {
       main { width: min(100vw, calc(100vh * 1.7778), 1600px); max-width: none; height: auto; max-height: 100vh; aspect-ratio: 16 / 9; padding: 10px 18px; display: flex; flex-direction: column; overflow: hidden; }
-      h1 { font-size: 28px; margin-bottom: 2px; }
-      h2 { font-size: 16px; margin-bottom: 5px; }
-      .intro { margin: 0 0 3px; }
-      .panel { padding: 9px; margin-top: 5px; border-radius: 10px; }
-      .content-grid { flex: 1; min-height: 0; grid-template-rows: minmax(0,1fr) minmax(0,1fr) auto; gap: 8px; }
-      .content-grid > .panel { min-height: 0; }
-      .content-grid > section.panel.wide[aria-label="M、N、K 矩阵及当前 tile"] { grid-column: 1; }
-      .content-grid > section.panel[aria-label="共享内存环形缓冲区"] { grid-column: 2; }
-      .content-grid > section.panel.wide[aria-label="共享内存 swizzle 映射演示"] { grid-column: 1; }
-      .content-grid > section.panel[aria-label="CTA 内线程和 warp 分工"] { grid-column: 2; }
-      .content-grid > section.panel.wide[aria-label="MMA 子步和重叠时间线"] { grid-column: 1 / -1; }
+      h1 { font-size: 26px; margin-bottom: 0; }
+      h2 { font-size: 15px; margin-bottom: 4px; }
+      .intro { margin: 0 0 2px; max-width: none; }
+      .intro p { font-size: 13px; }
+      .panel { padding: 8px 9px; margin-top: 5px; border-radius: 10px; }
+      .content-grid { flex: 1; min-height: 0; margin-top: 5px; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; }
+      .content-grid > .panel { min-height: 0; overflow: auto; }
+      .p-maps { grid-column: 1 / 3; }
+      .p-buffers { grid-column: 3 / 5; }
+      .p-swizzle { grid-column: 1 / 3; }
+      .p-warps { grid-column: 3 / 5; }
+      .p-timeline { grid-column: 1 / -1; }
       .controls { gap: 4px 8px; }
-      select, button { padding: 4px 7px; font-size: 13px; }
-      label { gap: 3px; font-size: 12px; }
+      select, button { padding: 3px 7px; font-size: 13px; }
+      label { gap: 2px; font-size: 12px; }
       .readout { gap: 5px; margin-top: 5px; }
       .pill { padding: 2px 7px; font-size: 11px; }
-      .buffers { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px; }
-      .buffer { min-height: 60px; padding: 5px; }
+      .buffers { gap: 4px; }
+      .buffer { min-height: 56px; padding: 4px 6px; }
       .buffer-top, .role { font-size: 11px; }
-      .chunk { margin-top: 2px; font-size: 14px; }
+      .chunk { margin-top: 1px; font-size: 14px; }
       .buffer small { font-size: 10px; }
-      .legend { gap: 9px; margin: 4px 0 5px; font-size: 11px; }
-      .map-cell { min-height: 18px; font-size: 9px; }
-      .maps { gap: 4px; }
-      .map h3 { font-size: 15px; }
-      .map .dims, .map-axis { margin-bottom: 3px; font-size: 10px; }
-      .thread-note, .note { margin-top: 5px; font-size: 11px; line-height: 1.25; }
-      .swizzle-controls { margin: 5px 0; gap: 7px; }
-      .pack { min-height: 23px; font-size: 10px; }
-      .swizzle-caption { margin-bottom: 3px; font-size: 11px; }
+      .legend { gap: 9px; margin: 3px 0 5px; font-size: 11px; }
+      .map-cell { min-height: 17px; font-size: 9px; }
+      .maps { gap: 4px 10px; }
+      .map h3 { font-size: 14px; }
+      .map .dims, .map-axis { margin-bottom: 2px; font-size: 10px; }
+      .thread-note, .note, .swizzle-result { margin-top: 4px; font-size: 11px; line-height: 1.3; }
+      .p-swizzle > p { font-size: 11px; line-height: 1.3; }
+      .swizzle-controls { margin: 4px 0; gap: 7px; }
+      .pack { min-height: 15px; font-size: 9px; }
+      .swizzle-caption { margin-bottom: 2px; font-size: 11px; }
       .warp-grid { gap: 4px; }
-      .warp { padding: 5px; }
+      .warp { padding: 4px 6px; }
       .warp-title { font-size: 11px; }
-      .lanes { margin-top: 4px; gap: 2px; }
-      .lane { height: 13px; font-size: 9px; }
+      .lanes { margin-top: 3px; gap: 1px; }
+      .lane { height: 11px; font-size: 8px; }
       .mma-path { gap: 4px; margin-top: 5px; }
-      .path-node { min-height: 48px; padding: 5px; font-size: 11px; }
+      .path-node { min-height: 44px; padding: 4px; font-size: 11px; }
       .path-node small, .tensor-core small { font-size: 10px; }
-      .tensor-core { min-height: 54px; padding: 5px; }
+      .tensor-core { min-height: 50px; padding: 4px; }
       .tensor-core b { font-size: 14px; }
-      .compute-layout { gap: 8px; }
-      .substep { padding: 5px; font-size: 11px; }
-      .tick { grid-template-columns: 52px 1fr 1fr; gap: 5px; font-size: 10px; }
-      .bar { min-height: 20px; }
-      .note { display: none; }
+      .compute-layout { gap: 10px; }
+      .reg { padding: 4px; font-size: 11px; }
+      .regs { margin-top: 4px; gap: 4px; }
+      .tick { grid-template-columns: 56px repeat(3, minmax(0, 1fr)); gap: 4px; font-size: 10px; }
+      .timeline { gap: 3px; }
+      .bar { min-height: 20px; padding: 1px 4px; }
+      .p-timeline .note { display: none; }
     }
   </style>
 </head>
@@ -182,15 +216,21 @@
 <main>
   <header class="intro">
     <h1>Scheduled GEMM：加载与计算</h1>
-    <p>观察一个 CUDA block 如何沿 K 维预取 A/B tile，并用多级共享内存缓冲区与 WMMA 计算重叠。</p>
+    <p>一个 CTA 沿 K 维用 <code>cp.async</code> 预取 A/B tile 到多级共享内存，<code>ldmatrix</code> 取片段到双寄存器槽，<code>mma.sync m16n8k16</code> 在 Tensor Core 上累加。对应 <code>src/gemm_wmma_tiled_pipeline_schedule.cu</code>（BK≥32 路径）。</p>
   </header>
 
   <section class="panel" aria-label="模拟参数和播放控制">
     <div class="controls">
+      <label>CTA / warp tile
+        <select id="tile">
+          <option value="64" selected>64×64 / 32×32（默认）</option>
+          <option value="128">128×128 / 64×64（自动大 tile）</option>
+        </select>
+      </label>
       <label>流水级数 STAGES
         <select id="stages"><option>2</option><option selected>3</option><option>4</option></select>
       </label>
-      <label>K 分块 GEMM_BK
+      <label>K 分块 BK
         <select id="bk"><option selected>32</option><option>64</option></select>
       </label>
       <label>K 方向块数
@@ -206,241 +246,405 @@
         <select id="cta"></select>
       </label>
       <div class="actions">
-        <button id="reset" type="button">回到预填充</button>
-        <button id="play" class="primary" type="button">播放</button>
-        <button id="next" type="button">下一拍</button>
+        <button id="reset" type="button" title="回到预填充（Home）">⟲ 预填充</button>
+        <button id="prev" type="button" title="上一拍（←）">◀ 上一拍</button>
+        <button id="play" class="primary" type="button" title="播放 / 暂停（空格）">播放</button>
+        <button id="next" type="button" title="下一拍（→）">下一拍 ▶</button>
       </div>
     </div>
     <div id="readout" class="readout" aria-live="polite"></div>
   </section>
 
   <div class="content-grid">
-  <section class="panel wide" aria-label="M、N、K 矩阵及当前 tile">
-    <div class="section-title"><h2>整个 GEMM：当前 CTA 负责哪块</h2><span id="tileCoordinates" class="pill"></span></div>
-    <div id="matrixMaps" class="maps"></div>
-    <p class="thread-note">橙色表示当前 K chunk 对应的 A/B 输入 tile；蓝色表示这个 CTA 最终写入的 C 输出 tile。这里假设 GEMM_GROUP_M=1，CTA 按 M 行、N 列顺序编号。</p>
-  </section>
+    <section class="panel p-maps" aria-label="M、N、K 矩阵及当前 tile">
+      <div class="section-title"><h2>整个 GEMM：当前 CTA 负责哪块</h2><span id="tileCoordinates" class="pill"></span></div>
+      <div id="matrixMaps" class="maps"></div>
+      <p class="thread-note">实线橙色：当前计算的 K tile；虚线橙色：正在 <code>cp.async</code> 的后续 K tile；蓝色：本 CTA 写出的 C tile。假设 <code>GEMM_GROUP_M=1</code>，CTA 按行优先编号。</p>
+    </section>
 
-  <section class="panel" aria-label="共享内存环形缓冲区">
-    <div class="section-title"><h2>共享内存：A/B 环形缓冲区</h2><span id="phaseLabel" class="pill"></span></div>
-    <div class="legend">
-      <span><i class="dot compute"></i>当前 MMA 读取</span>
-      <span><i class="dot copy"></i>异步拷贝写入</span>
-      <span><i class="dot ready"></i>已预填 / 等待读取</span>
-    </div>
-    <div id="buffers" class="buffers"></div>
-    <div class="matrix-pair">
-      <div class="matrix"><b>A tile</b><span id="aShape" class="formula"></span></div>
-      <span class="times">×</span>
-      <div class="matrix"><b>B tile</b><span id="bShape" class="formula"></span></div>
-    </div>
-  </section>
-
-  <section class="panel wide" aria-label="共享内存 swizzle 映射演示">
-    <div class="section-title"><h2>共享内存 swizzle：逻辑 pack 如何换位置</h2><span class="pill">每格 = 8 个 half = 16 B</span></div>
-    <p>内核把每行的 16 字节 pack 按 XOR 规则重排，避免矩阵片段加载时多个 lane 集中访问相同的共享内存 bank 组。pack 内部的 8 个 half 保持连续。</p>
-    <div class="swizzle-controls">
-      <label>选中行 r（0–7）<select id="swizzleRow"></select></label>
-      <label>逻辑 pack 列 c（0–7）<select id="swizzleCol"></select></label>
-      <span id="swizzleFormula" class="pill" aria-live="polite"></span>
-    </div>
-    <div class="swizzle-demo">
-      <div><div class="swizzle-caption">逻辑 tile（第 r 行）</div><div id="logicalPacks" class="pack-grid"></div></div>
-      <div class="swizzle-arrow" aria-hidden="true">→</div>
-      <div><div class="swizzle-caption">共享内存物理 pack 槽</div><div id="physicalPacks" class="pack-grid"></div></div>
-    </div>
-    <p class="note">映射为 <span class="formula">physical_col = logical_col XOR (row &amp; 7)</span>。两边高亮的是同一组数据的源位置和目标位置；拷贝写入与 ldmatrix 读取使用相同映射。这里展示一个 8×8 pack 的低位示意，不代表每格就是一个 bank。</p>
-  </section>
-
-  <section class="panel" aria-label="CTA 内线程和 warp 分工">
-    <div class="section-title"><h2>一个 CTA 内：线程分别做什么</h2><span id="threadSummary" class="pill"></span></div>
-    <div id="warpGrid" class="warp-grid"></div>
-    <div class="mma-path" aria-label="线程 warp 向 Tensor Core 发出 MMA 指令的过程">
-      <div class="path-node"><b>Warp 的 32 个 lane</b><small>协作取 A/B 片段</small></div>
-      <span class="path-arrow" aria-hidden="true">→</span>
-      <div class="path-node"><b>ldmatrix</b><small>共享内存 → lane 寄存器</small></div>
-      <span class="path-arrow" aria-hidden="true">→</span>
-      <div class="tensor-core"><b>Tensor Core</b><small>SM 执行 mma.sync<br>FP16 × FP16 + FP32 累加</small></div>
-      <span class="path-arrow" aria-hidden="true">→</span>
-      <div class="path-node"><b>累加器片段</b><small>每个 warp 的 FP32 累加值</small></div>
-    </div>
-    <p class="thread-note"><b>加载：</b>默认 CTA 有 128 个线程；线程按 16 字节（8 个 half）一组，协作搬运 A/B tile，下一阶段的拷贝分散在 MMA 子步之间。<br><b>计算：</b>一个 warp 的 32 个 lane 协作加载片段并执行 Tensor Core MMA；每个 warp 负责一个 WM×WN 输出子块，不是一个 lane 对应一个 C 元素。Tensor Core 是 SM 内的执行单元，不是每个 warp 独占一颗。</p>
-  </section>
-
-  <section class="panel wide" aria-label="MMA 子步和重叠时间线">
-    <h2>当前 K tile 的加载与计算时序</h2>
-    <div class="compute-layout">
-      <div>
-        <p id="substepHeading" style="margin-bottom:10px"></p>
-        <div id="substeps" class="substeps"></div>
+    <section class="panel p-buffers" aria-label="共享内存环形缓冲区">
+      <div class="section-title"><h2>共享内存：A/B 环形缓冲区</h2><span id="phaseLabel" class="pill"></span></div>
+      <div class="legend">
+        <span><i class="dot compute"></i>cur：ldmatrix 读取</span>
+        <span><i class="dot copy"></i>cp.async 写入 / 传输中</span>
+        <span><i class="dot ready"></i>已提交 / 已到达</span>
+        <span><i class="dot idle"></i>空闲</span>
       </div>
-      <div>
-        <div class="tick"><span>阶段</span><b>计算路径</b><b>数据搬运</b></div>
+      <div id="buffers" class="buffers"></div>
+    </section>
+
+    <section class="panel p-swizzle" aria-label="共享内存 swizzle 映射演示">
+      <div class="section-title"><h2>共享内存 swizzle：一次 ldmatrix 的 8 个 pack</h2><span class="pill">每格 = 8 half = 16 B；同一 bank 组 = 地址/16 mod 8</span></div>
+      <p>写入与读取都用 <span class="formula">phys = (row·P + c) XOR (row &amp; 7)</span>（P = 每行 pack 数）。逻辑列 c 的 8 行正是 ldmatrix 一个 8×8 矩阵的 8 个行地址；XOR 让它们落到 8 个不同 bank 组。点击左侧格子选择 pack。</p>
+      <div class="swizzle-controls">
+        <label>操作数<select id="swizzleOperand"></select></label>
+        <label>行 r（0–7）<select id="swizzleRow"></select></label>
+        <label>逻辑 pack 列 c<select id="swizzleCol"></select></label>
+        <span id="swizzleFormula" class="pill" aria-live="polite"></span>
+      </div>
+      <div class="swizzle-demo">
+        <div><div class="swizzle-caption">逻辑 tile（前 8 行）</div><div id="logicalPacks" class="pack-grid"></div></div>
+        <div class="swizzle-arrow" aria-hidden="true">→</div>
+        <div><div class="swizzle-caption">共享内存物理槽（格内为来源 pack）</div><div id="physicalPacks" class="pack-grid"></div></div>
+      </div>
+      <p id="swizzleResult" class="swizzle-result"></p>
+    </section>
+
+    <section class="panel p-warps" aria-label="CTA 内线程和 warp 分工">
+      <div class="section-title"><h2>一个 CTA 内：线程分别做什么</h2><span id="threadSummary" class="pill"></span></div>
+      <div id="warpGrid" class="warp-grid"></div>
+      <div class="mma-path" aria-label="线程 warp 向 Tensor Core 发出 MMA 指令的过程">
+        <div class="path-node"><b>Warp 的 32 个 lane</b><small>各给出一个 ldmatrix 行地址</small></div>
+        <span class="path-arrow" aria-hidden="true">→</span>
+        <div class="path-node"><b>ldmatrix.x4</b><small>共享内存 → 寄存器槽<br>B 用 .trans</small></div>
+        <span class="path-arrow" aria-hidden="true">→</span>
+        <div class="tensor-core"><b>Tensor Core</b><small>mma.sync m16n8k16<br>FP16 × FP16 + FP32</small></div>
+        <span class="path-arrow" aria-hidden="true">→</span>
+        <div class="path-node"><b>累加器</b><small id="accNote"></small></div>
+      </div>
+      <p id="threadNote" class="thread-note"></p>
+    </section>
+
+    <section class="panel p-timeline" aria-label="MMA 子步和重叠时间线">
+      <div class="section-title"><h2 id="timelineTitle">当前 K tile 的加载与计算时序</h2><span id="timelinePill" class="pill"></span></div>
+      <div class="compute-layout">
+        <div>
+          <p id="substepHeading"></p>
+          <div id="regs" class="regs"></div>
+        </div>
         <div id="timeline" class="timeline"></div>
       </div>
-    </div>
-    <p class="note">每个 K tile 内含 BK/16 个 16×16×16 MMA 子步。schedule 路径把下一块的全局到共享内存拷贝分组插入当前 MMA 循环；当前块结束后同步，再轮换 cur/next。</p>
-  </section>
+      <p class="note">BK≥32 时，下一 stage 的拷贝按“MMA 行”分组，全部在最后一个 K 子步之前发出；倒数第二个子步后 commit、<code>wait_prior(STAGES-2)</code>、<code>__syncthreads()</code> 并轮换 cur/next——此时末子步的操作数已在寄存器里，所以 cur 可提前释放，末子步顺便从新 cur 预取下一 tile 的 k0。</p>
+    </section>
   </div>
 </main>
 
 <script>
 (() => {
-  const stagesEl = document.getElementById('stages');
-  const bkEl = document.getElementById('bk');
-  const chunksEl = document.getElementById('chunks');
-  const mTilesEl = document.getElementById('mTiles');
-  const nTilesEl = document.getElementById('nTiles');
-  const ctaEl = document.getElementById('cta');
-  const buffersEl = document.getElementById('buffers');
-  const readoutEl = document.getElementById('readout');
-  const substepsEl = document.getElementById('substeps');
-  const timelineEl = document.getElementById('timeline');
-  const phaseEl = document.getElementById('phaseLabel');
-  const swizzleRowEl = document.getElementById('swizzleRow');
-  const swizzleColEl = document.getElementById('swizzleCol');
-  let step = -1;
-  let sub = 0;
-  let timer = null;
+  const $ = id => document.getElementById(id);
+  const el = {
+    tile: $('tile'), stages: $('stages'), bk: $('bk'), chunks: $('chunks'),
+    mTiles: $('mTiles'), nTiles: $('nTiles'), cta: $('cta'), play: $('play'), prev: $('prev'), next: $('next'),
+    readout: $('readout'), buffers: $('buffers'), phase: $('phaseLabel'),
+    maps: $('matrixMaps'), tileCoords: $('tileCoordinates'),
+    threadSummary: $('threadSummary'), warpGrid: $('warpGrid'), accNote: $('accNote'), threadNote: $('threadNote'),
+    timeline: $('timeline'), timelineTitle: $('timelineTitle'), timelinePill: $('timelinePill'),
+    substepHeading: $('substepHeading'), regs: $('regs'),
+    swOperand: $('swizzleOperand'), swRow: $('swizzleRow'), swCol: $('swizzleCol'),
+    swFormula: $('swizzleFormula'), logical: $('logicalPacks'), physical: $('physicalPacks'), swResult: $('swizzleResult')
+  };
+  const num = e => Number(e.value);
+  const options = (n, label = i => i) => Array.from({length: n}, (_, i) => `<option value="${i}">${label(i)}</option>`).join('');
 
-  const value = el => Number(el.value);
+  // Mirrors the kernel's compile-time configuration (BLOCK_SIZE = warps * 32).
+  function config() {
+    const BM = num(el.tile), BN = BM, WM = BM / 2, WN = BN / 2;
+    const BK = num(el.bk), STAGES = num(el.stages), chunks = num(el.chunks);
+    const warps = (BM / WM) * (BN / WN), block = warps * 32;
+    const S = BK / 16;                         // K=16 substeps per K tile
+    const mRows = WM / 16;                     // MMA rows per substep (copy groups attach here)
+    const groups = (S - 1) * mRows;            // CopyGroup<GROUPS>
+    const mTiles = num(el.mTiles), nTiles = num(el.nTiles);
+    const cta = num(el.cta) || 0;
+    const shm = STAGES * (BM + BN) * BK * 2;
+    return { BM, BN, WM, WN, BK, STAGES, chunks, warps, block, S, mRows, groups, mTiles, nTiles, cta,
+      mTile: Math.floor(cta / nTiles), nTile: cta % nTiles,
+      mmaPerSub: (WM / 16) * (WN / 8), shm,
+      thA: Math.ceil(BM * BK / 8 / block), thB: Math.ceil(BK * BN / 8 / block) };
+  }
+
+  // Per-thread 16-byte copies issued in substep k: SwizzledInputTile::CopyGroup puts
+  // copy i into group floor(i * GROUPS / TH_WORKS); group = k * (WM/16) + row.
+  function copiesAt(th, c, k) {
+    let n = 0;
+    for (let i = 0; i < th; i++) {
+      const g = Math.floor(i * c.groups / th);
+      if (g >= k * c.mRows && g < (k + 1) * c.mRows) n++;
+    }
+    return n;
+  }
+
+  // step: -1 prologue, 0..chunks-1 mainloop, chunks epilogue. sub: K=16 substep.
+  let step = -1, sub = 0, timer = null;
+
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
-    document.getElementById('play').textContent = '播放';
+    el.play.textContent = '播放';
   }
+  function advance(dir = 1) {
+    const c = config();
+    if (dir > 0) {
+      if (step < 0 || step >= c.chunks) { step = step < 0 ? 0 : -1; sub = 0; }
+      else if (sub + 1 < c.S) sub++;
+      else { step++; sub = 0; }
+    } else {
+      if (step < 0) { step = c.chunks; sub = 0; }
+      else if (step >= c.chunks) { step = c.chunks - 1; sub = c.S - 1; }
+      else if (sub > 0) sub--;
+      else if (step === 0) step = -1;
+      else { step--; sub = c.S - 1; }
+    }
+    render();
+  }
+  function restart() { stop(); step = -1; sub = 0; render(); }
+
   function updateCtaOptions() {
-    const count = value(mTilesEl) * value(nTilesEl);
-    const selected = Math.min(value(ctaEl) || 0, count - 1);
-    ctaEl.innerHTML = Array.from({length: count}, (_, i) => `<option value="${i}">CTA ${i}</option>`).join('');
-    ctaEl.value = String(selected);
+    const count = num(el.mTiles) * num(el.nTiles);
+    const selected = Math.min(num(el.cta) || 0, count - 1);
+    el.cta.innerHTML = options(count, i => `CTA ${i}`);
+    el.cta.value = String(selected);
   }
-  function matrixMap(title, dims, rows, cols, axis, selectedRow, selectedCol, isOutput) {
+
+  function bufferStates(c) {
+    const pro = step < 0, epi = step >= c.chunks, late = !pro && !epi && sub === c.S - 1;
+    const lastIssued = pro ? Math.min(c.STAGES - 2, c.chunks - 1)
+      : epi ? c.chunks - 1 : Math.min(step + c.STAGES - 1, c.chunks - 1);
+    return Array.from({length: c.STAGES}, (_, s) => {
+      let k = null;
+      for (let x = s; x <= lastIssued; x += c.STAGES) k = x;
+      if (k === null) return { k, cls: '', role: '空' };
+      if (pro) return k === 0
+        ? { k, cls: 'ready', role: '已到达 · ldmatrix k0' }
+        : { k, cls: 'incoming', role: 'cp.async 传输中' };
+      if (epi || k < step) return { k, cls: 'released', role: '已用完 · 空闲' };
+      if (k === step) {
+        if (!late) return { k, cls: 'current', role: 'cur · ldmatrix 读取' };
+        const nextWrite = step + c.STAGES;
+        return { k, cls: 'released', role: nextWrite < c.chunks ? `已释放 → 下轮写 K${nextWrite}` : '已释放' };
+      }
+      if (late && k === step + 1) return { k, cls: 'ready', role: '新 cur · 已到达，预取 k0' };
+      if (k === step + c.STAGES - 1) return late
+        ? { k, cls: 'incoming', role: '已提交 · 传输中' }
+        : { k, cls: 'incoming', role: 'next · cp.async 写入' };
+      return { k, cls: 'pending', role: '已提交 · 等待 wait_prior' };
+    });
+  }
+
+  function matrixMap(name, dims, rows, cols, axis, hit) {
     const cells = [];
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const active = r === selectedRow && c === selectedCol;
-        const label = `${title}[${r},${c}]`;
-        const rowLabel = title === 'A' ? `M tile ${r}, K tile ${c}` : title === 'B' ? `K tile ${r}, N tile ${c}` : `M tile ${r}, N tile ${c}`;
-        cells.push(`<div class="map-cell ${active ? (isOutput ? 'output' : 'selected') : ''}" aria-label="${rowLabel}, ${label}">${label}</div>`);
+    for (let r = 0; r < rows; r++) for (let col = 0; col < cols; col++) {
+      const cls = hit(r, col);
+      cells.push(`<div class="map-cell ${cls}" title="${name}[${r},${col}]">${name}${r},${col}</div>`);
+    }
+    return `<div class="map ${name.toLowerCase()}"><h3>${name}</h3><div class="dims">${dims}</div><div class="map-axis">${axis}</div>` +
+      `<div class="map-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${cells.join('')}</div></div>`;
+  }
+
+  function renderMaps(c) {
+    const pro = step < 0, epi = step >= c.chunks;
+    const curK = pro || epi ? -1 : step;
+    const loading = new Set();
+    if (pro) for (let k = 0; k < Math.min(c.STAGES - 1, c.chunks); k++) loading.add(k);
+    else if (!epi && step + c.STAGES - 1 < c.chunks) loading.add(step + c.STAGES - 1);
+    const kCls = k => k === curK ? 'selected' : loading.has(k) ? 'loading' : '';
+    const m = c.mTiles * c.BM, n = c.nTiles * c.BN, k = c.chunks * c.BK;
+    el.tileCoords.textContent = `CTA ${c.cta} → C tile (${c.mTile}, ${c.nTile})` + (curK >= 0 ? ` · K${curK}` : '');
+    el.maps.innerHTML = [
+      matrixMap('A', `${m} × ${k}（M × K）`, c.mTiles, c.chunks, `行 = BM=${c.BM} · 列 = BK=${c.BK}`, (r, col) => r === c.mTile ? kCls(col) : ''),
+      matrixMap('B', `${k} × ${n}（K × N）`, c.chunks, c.nTiles, `行 = BK · 列 = BN=${c.BN}`, (r, col) => col === c.nTile ? kCls(r) : ''),
+      matrixMap('C', `${m} × ${n}（M × N）`, c.mTiles, c.nTiles, '行 = BM · 列 = BN', (r, col) => r === c.mTile && col === c.nTile ? 'output' : '')
+    ].join('');
+  }
+
+  function renderWarps(c) {
+    el.threadSummary.textContent = `${c.warps} warp × 32 = ${c.block} 线程`;
+    const row0 = c.mTile * c.BM, col0 = c.nTile * c.BN;
+    const lanes = Array.from({length: 32}, (_, l) => `<span class="lane">${l}</span>`).join('');
+    el.warpGrid.innerHTML = Array.from({length: c.warps}, (_, w) => {
+      const wm = Math.floor(w / (c.BN / c.WN)) * c.WM, wn = (w % (c.BN / c.WN)) * c.WN;
+      return `<div class="warp"><div class="warp-title"><span>warp ${w}</span>` +
+        `<span>C[${row0 + wm}:${row0 + wm + c.WM}, ${col0 + wn}:${col0 + wn + c.WN}]</span></div>` +
+        `<div class="lanes" aria-label="lane 0 到 lane 31">${lanes}</div></div>`;
+    }).join('');
+    el.accNote.textContent = `每 warp ${c.WM}×${c.WN} FP32，每 lane ${c.WM * c.WN / 32} 个`;
+    el.threadNote.innerHTML =
+      `<b>加载：</b>${c.block} 个线程每次搬 16 B（8 half）；每个 K tile 每线程 A×${c.thA}、B×${c.thB} 次 <code>cp.async</code>，分散到前 ${c.S - 1} 个 MMA 子步。` +
+      `<br><b>计算：</b>每子步每 warp 发 ${c.WM / 16}×${c.WN / 8} = ${c.mmaPerSub} 条 m16n8k16；每个 warp 负责 ${c.WM}×${c.WN} 输出子块，不是一个 lane 对应一个 C 元素。`;
+  }
+
+  function regSlots(c) {
+    const pro = step < 0, epi = step >= c.chunks;
+    if (pro) return [['load', `← K0 k0`], ['', '空闲']];
+    if (epi) return [['', '—'], ['', '—']];
+    const slot = sub & 1, loadSlot = slot ^ 1;
+    let load = null;
+    if (sub + 1 < c.S) load = `← K${step} k${sub + 1}`;
+    else if (step + 1 < c.chunks) load = `← K${step + 1} k0`;
+    const out = [];
+    out[slot] = ['read', `K${step} k${sub} → mma`];
+    out[loadSlot] = load ? ['load', load] : ['', '空闲'];
+    return out;
+  }
+
+  function tick(label, cells, active) {
+    return `<div class="tick ${active ? 'active' : ''}"><span>${label}</span>` +
+      cells.map(([cls, text]) => `<span class="bar ${cls}">${text}</span>`).join('') + '</div>';
+  }
+
+  function renderTimeline(c) {
+    const pro = step < 0, epi = step >= c.chunks;
+    const head = '<div class="tick head"><span>子步</span><b>Tensor Core</b><b>共享 → 寄存器</b><b>全局 → 共享</b></div>';
+    const waitSync = `wait_prior(${c.STAGES - 2}) · __syncthreads`;
+    let rows = [];
+    if (pro) {
+      el.timelineTitle.textContent = '预填充（prologue）';
+      el.timelinePill.textContent = `${c.STAGES - 1} 个 stage 先行`;
+      for (let s = 0; s < c.STAGES - 1; s++) {
+        rows.push(tick(`stage ${s}`, [['', '—'], ['', '—'],
+          s < c.chunks ? ['async', `cp.async K${s}（A×${c.thA} B×${c.thB}）+ commit`] : ['', '空 commit']], true));
+      }
+      rows.push(tick('同步', [['', '—'], ['', '—'], ['sync', waitSync]], true));
+      rows.push(tick('预取', [['', '—'], ['ldm', 'ldmatrix K0 k0 → 槽 0'], ['', '—']], true));
+    } else if (epi) {
+      el.timelineTitle.textContent = '收尾（epilogue）';
+      el.timelinePill.textContent = `${c.chunks} 个 K tile 已累加`;
+      rows.push(tick('等待', [['', '—'], ['', '—'], ['sync', 'wait_prior(0)']], true));
+      rows.push(tick('写回', [['mma', '累加器 → half'], ['', '—'], ['async', `写出 C tile (${c.mTile}, ${c.nTile})`]], true));
+    } else {
+      el.timelineTitle.textContent = `K${step} 的加载与计算时序`;
+      el.timelinePill.textContent = `${c.S} 个 K=16 子步 · 每子步 ${c.mmaPerSub} mma / warp`;
+      const writeK = step + c.STAGES - 1, copying = writeK < c.chunks;
+      for (let k = 0; k < c.S; k++) {
+        const mma = ['mma', `${c.mmaPerSub}× mma.sync（槽 ${k & 1}）`];
+        let ldm = ['', '—'];
+        if (k + 1 < c.S) ldm = ['ldm', `K${step} k${k + 1} → 槽 ${(k & 1) ^ 1}`];
+        else if (step + 1 < c.chunks) ldm = ['ldm', `跨 stage：K${step + 1} k0 → 槽 ${(k & 1) ^ 1}`];
+        const a = copiesAt(c.thA, c, k), b = copiesAt(c.thB, c, k);
+        const copy = k < c.S - 1 && copying && a + b > 0 ? `cp.async K${writeK}（A×${a} B×${b}）` : '';
+        let cell = copy ? ['async', copy] : ['', '—'];
+        if (k === c.S - 2) {
+          const sync = `${copying ? '' : '空 '}commit · ${waitSync} · 轮换 cur/next`;
+          cell = copy ? ['async sync', `${copy}<br>→ ${sync}`] : ['sync', sync];
+        }
+        rows.push(tick(`k${k}`, [mma, ldm, cell], k === sub));
       }
     }
-    return `<div class="map"><h3>${title}</h3><div class="dims">${dims}</div><div class="map-axis">${axis}</div><div class="map-grid" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${cells.join('')}</div></div>`;
+    el.timeline.innerHTML = head + rows.join('');
+
+    el.substepHeading.textContent = pro
+      ? '寄存器双槽：主循环前先把 K0 的 k0 片段放进槽 0。'
+      : epi ? '寄存器双槽：已排空。'
+      : `寄存器双槽：k${sub} 读槽 ${sub & 1}，同时向槽 ${(sub & 1) ^ 1} 预取下一组片段。`;
+    el.regs.innerHTML = regSlots(c).map(([cls, text], i) => `<div class="reg ${cls}"><b>槽 ${i}</b>${text}</div>`).join('');
   }
-  function renderMatrixMaps(activeK, stages, bk, chunks) {
-    const mTiles = value(mTilesEl), nTiles = value(nTilesEl);
-    const cta = value(ctaEl) || 0;
-    const mTile = Math.floor(cta / nTiles), nTile = cta % nTiles;
-    const m = mTiles * 64, n = nTiles * 64, k = chunks * bk;
-    document.getElementById('tileCoordinates').textContent =
-      `CTA ${cta}: M tile ${mTile}, N tile ${nTile} · 当前 K tile ${activeK}`;
-    document.getElementById('matrixMaps').innerHTML = [
-      matrixMap('A', `${m} × ${k} = M × K`, mTiles, chunks, '行是 BM tile · 列是 BK chunk', mTile, activeK, false),
-      matrixMap('B', `${k} × ${n} = K × N`, chunks, nTiles, '行是 BK chunk · 列是 BN tile', activeK, nTile, false),
-      matrixMap('C', `${m} × ${n} = M × N`, mTiles, nTiles, '行是 BM tile · 列是 BN tile', mTile, nTile, true)
+
+  function render() {
+    const c = config();
+    if (step > c.chunks) { step = -1; sub = 0; }
+    if (sub >= c.S) sub = c.S - 1;
+    const pro = step < 0, epi = step >= c.chunks;
+    const kib = c.shm / 1024;
+    el.readout.innerHTML = [
+      `<span class="pill">A tile <strong>${c.BM}×${c.BK}</strong> · B tile <strong>${c.BK}×${c.BN}</strong></span>`,
+      `<span class="pill">K = <strong>${c.chunks * c.BK}</strong>（${c.chunks} 块）</span>`,
+      `<span class="pill">共享内存 <strong>${kib} KiB</strong>${c.shm > 48 * 1024 ? '（动态，需 opt-in）' : '（静态）'}</span>`,
+      `<span class="pill">每线程每 tile <strong>${c.thA + c.thB}</strong> 次 16 B cp.async</span>`,
+      `<span class="pill now">当前 <strong>${pro ? '预填充' : epi ? '收尾' : `K${step} · 子步 k${sub}（${sub + 1}/${c.S}）`}</strong></span>`
     ].join('');
-    document.getElementById('threadSummary').textContent =
-      `BM=BN=64 · WM=WN=32 · ${stages} 个 A/B buffer`;
-    document.getElementById('warpGrid').innerHTML = Array.from({length: 4}, (_, w) => {
-      const warpM = Math.floor(w / 2), warpN = w % 2;
-      const lanes = Array.from({length: 32}, (_, lane) => `<span class="lane active">${lane}</span>`).join('');
-      return `<div class="warp"><div class="warp-title"><span>warp ${w} · 32 lanes</span><span>负责 C[${mTile}·2+${warpM}, ${nTile}·2+${warpN}]</span></div><div class="lanes" aria-label="lane 0 到 lane 31">${lanes}</div></div>`;
+    el.phase.textContent = pro ? `预填充 ${Math.min(c.STAGES - 1, c.chunks)} 个 stage`
+      : epi ? 'wait_prior(0)，缓冲区排空'
+      : sub === c.S - 1 ? '已同步并轮换：cur 已提前释放' : `计算 K${step}，写入 K${step + c.STAGES - 1 < c.chunks ? step + c.STAGES - 1 : '—'}`;
+
+    el.buffers.innerHTML = bufferStates(c).map(({k, cls, role}, i) => {
+      const tiles = k === null ? 'A[—] · B[—]' : `A[${c.mTile},${k}] · B[${k},${c.nTile}]`;
+      return `<article class="buffer ${cls}"><div class="buffer-top"><span>buffer ${i}</span><span class="role">${role}</span></div>` +
+        `<div class="chunk">${k === null ? '空' : `K${k}`}</div><small class="tile-pair">${tiles}</small></article>`;
     }).join('');
+
+    renderMaps(c);
+    renderWarps(c);
+    renderTimeline(c);
   }
-  function runState() {
-    const stages = value(stagesEl), bk = value(bkEl), chunks = value(chunksEl);
-    const mmaSteps = bk / 16;
-    if (step >= chunks) { step = -1; sub = 0; }
-    const prologue = step < 0;
-    const activeK = prologue ? 0 : step;
-    const cur = prologue ? null : step % stages;
-    const next = prologue ? null : (step + stages - 1) % stages;
-    const preload = Array(stages).fill(null);
-    for (let i = 0; i < stages - 1 && i < chunks; i++) preload[i] = i;
-    for (let t = 0; t < Math.max(0, step); t++) {
-      const incoming = t + stages - 1;
-      if (incoming < chunks) preload[incoming % stages] = incoming;
-    }
 
-    readoutEl.innerHTML = [
-      `<span class="pill">A tile <strong>BM × BK</strong></span>`,
-      `<span class="pill">B tile <strong>BK × BN</strong></span>`,
-      `<span class="pill">K chunks <strong>${chunks}</strong> · K=${chunks * bk}</span>`,
-      `<span class="pill">MMA 子步 / chunk <strong>${mmaSteps}</strong></span>`,
-      `<span class="pill">当前 <strong>${prologue ? '预填充' : `K${step} · MMA ${sub + 1}/${mmaSteps}`}</strong></span>`
-    ].join('');
-    phaseEl.textContent = prologue ? `预填充：最多 ${stages - 1} 个 K tile` : `计算 K${step}，并预取后续 tile`;
-    document.getElementById('aShape').textContent = `BM × ${bk}`;
-    document.getElementById('bShape').textContent = `${bk} × BN`;
-    renderMatrixMaps(activeK, stages, bk, chunks);
-
-    buffersEl.innerHTML = preload.map((chunk, i) => {
-      const isCur = i === cur;
-      const isNext = !prologue && i === next && step + stages - 1 < chunks;
-      let cls = 'buffer', role = '空闲';
-      if (isCur) { cls += ' current'; role = 'cur · 计算读取'; }
-      else if (isNext) { cls += ' incoming'; role = 'next · 正在写入'; }
-      else if (chunk !== null) { cls += ' ready'; role = '已就绪'; }
-      const tileK = isNext ? step + stages - 1 : chunk;
-      const chunkLabel = tileK === null ? '空' : `K${tileK}${isNext ? ' →' : ''}`;
-      const mTile = Math.floor((value(ctaEl) || 0) / value(nTilesEl));
-      const nTile = (value(ctaEl) || 0) % value(nTilesEl);
-      const tileNames = tileK === null ? 'A[—] · B[—]' : `A[${mTile},${tileK}] · B[${tileK},${nTile}]`;
-      return `<article class="${cls}"><div class="buffer-top"><span>buffer ${i}</span><span class="role">${role}</span></div><div class="chunk">${chunkLabel}</div><small class="tile-pair">${tileNames}</small></article>`;
-    }).join('');
-
-    document.getElementById('substepHeading').textContent = prologue
-      ? '先填充最初的共享内存 stage，再开始 MMA。'
-      : `K${step}：读取寄存器槽 ${sub % 2}；预取槽 ${(sub % 2) ^ 1}。`;
-    substepsEl.innerHTML = Array.from({length: mmaSteps}, (_, k) => {
-      const active = !prologue && k === sub;
-      const prefetch = active && k < mmaSteps - 1;
-      return `<div class="substep ${active ? 'active' : ''} ${prefetch ? 'prefetch' : ''}"><b>k${k}</b><br>MMA${active ? (prefetch ? ' + 预取' : '') : ''}</div>`;
-    }).join('');
-    const copyNow = !prologue && step + stages - 1 < chunks;
-    timelineEl.innerHTML = Array.from({length: mmaSteps}, (_, n) => {
-      const active = !prologue && n === sub;
-      const hasCopy = active && copyNow && n < mmaSteps - 1;
-      const barrier = active && n === mmaSteps - 2 && bk >= 32;
-      return `<div class="tick"><span>${prologue ? '准备' : `MMA k${n % mmaSteps}`}</span><span class="bar ${active ? 'mma' : ''}">${active ? '读取寄存器片段并执行 mma.sync' : '—'}</span><span class="bar ${hasCopy ? 'async' : barrier ? 'sync' : ''}">${hasCopy ? '分组 cp.async：A、B → next' : barrier ? 'commit / wait / block sync' : '—'}</span></div>`;
-    }).join('');
+  // Swizzle: SwizzledInputTile and ScheduledOperands both use
+  // swizzled_offset<COLS>(row, col) = (row * COLS + col) ^ ((row & 7) * 8), in halves.
+  function swizzleShape() {
+    const c = config();
+    return el.swOperand.value === 'A' ? { cols: c.BK, name: `A（BM×BK，行宽 ${c.BK} half）` } : { cols: c.BN, name: `B（BK×BN，行宽 ${c.BN} half）` };
+  }
+  function updateSwizzleOptions() {
+    const c = config(), op = el.swOperand.value || 'A';
+    el.swOperand.innerHTML = `<option value="A">A：${c.BM}×${c.BK}</option><option value="B">B：${c.BK}×${c.BN}</option>`;
+    el.swOperand.value = op;
+    const P = swizzleShape().cols / 8, col = Math.min(num(el.swCol) || 0, P - 1);
+    el.swCol.innerHTML = options(P);
+    el.swCol.value = String(col);
   }
   function renderSwizzle() {
-    const row = value(swizzleRowEl), col = value(swizzleColEl);
-    const physicalCol = col ^ (row & 7);
-    document.getElementById('swizzleFormula').textContent =
-      `c${col} XOR (r${row} & 7) = 槽 ${physicalCol}`;
-    document.getElementById('logicalPacks').innerHTML = Array.from({length: 8}, (_, c) =>
-      `<div class="pack ${c === col ? 'source' : ''}" aria-label="逻辑列 ${c}">c${c}</div>`).join('');
-    document.getElementById('physicalPacks').innerHTML = Array.from({length: 8}, (_, c) =>
-      `<div class="pack ${c === physicalCol ? 'destination' : ''}" aria-label="物理槽 ${c}">s${c}</div>`).join('');
+    const { cols } = swizzleShape(), P = cols / 8;
+    const row = num(el.swRow), col = num(el.swCol);
+    const phys = (r, cc) => (r * P + cc) ^ (r & 7);
+    const dest = phys(row, col);
+    // Show the 8 rows that one ldmatrix 8x8 matrix covers (P >= 8 rows stay in place; P = 4 swaps adjacent rows).
+    const source = new Map();
+    for (let r = 0; r < 8; r++) for (let cc = 0; cc < P; cc++) source.set(phys(r, cc), [r, cc]);
+    const colDest = new Set(Array.from({length: 8}, (_, r) => phys(r, col)));
+    const style = `grid-template-columns:repeat(${P},minmax(0,1fr))`;
+    const heads = Array.from({length: P}, (_, i) => `<span class="bank-head">${i % 8}</span>`).join('');
+    let logical = '', physical = '';
+    for (let r = 0; r < 8; r++) for (let cc = 0; cc < P; cc++) {
+      const cls = r === row && cc === col ? 'source' : cc === col ? 'column' : '';
+      logical += `<button type="button" class="pack ${cls}" data-r="${r}" data-c="${cc}" title="逻辑 r${r} c${cc}">${cc === 0 ? `r${r}·` : ''}c${cc}</button>`;
+      const p = r * P + cc, [sr, sc] = source.get(p);
+      const pcls = p === dest ? 'destination' : colDest.has(p) ? 'target' : '';
+      physical += `<div class="pack ${pcls}" title="物理槽 ${p}（bank 组 ${p % 8}）← 逻辑 r${sr} c${sc}">${sr === r ? '' : `r${sr}`}c${sc}</div>`;
+    }
+    el.logical.style.cssText = style;
+    el.physical.style.cssText = style;
+    el.logical.innerHTML = logical;
+    el.physical.innerHTML = `<div class="pack-grid" style="${style};grid-column:1/-1">${heads}</div>` + physical;
+    el.swFormula.textContent = `(${row}·${P} + ${col}) XOR ${row & 7} = 槽 ${dest}（行 ${Math.floor(dest / P)}，列 ${dest % P}，bank 组 ${dest % 8}）`;
+
+    const swz = Array.from({length: 8}, (_, r) => phys(r, col) % 8);
+    const raw = Array.from({length: 8}, (_, r) => (r * P + col) % 8);
+    const ways = a => Math.max(...[...new Set(a)].map(g => a.filter(x => x === g).length));
+    const wSwz = ways(swz), wRaw = ways(raw);
+    el.swResult.innerHTML = `逻辑列 c${col} 的 8 行 → bank 组 [${swz.join(', ')}]：` +
+      (wSwz === 1 ? '<span class="ok">互不相同，无冲突</span>' : `<span class="bad">${wSwz}-way 冲突</span>`) +
+      `；不 swizzle 时为 [${raw.join(', ')}]，<span class="bad">${wRaw}-way 冲突</span>。` +
+      (P < 8 ? ` 行宽仅 ${P} 个 pack，XOR 的高位会把 pack 换到相邻行（格内 r 前缀）。` : '');
   }
-  function advance() {
-    const mmaSteps = value(bkEl) / 16;
-    if (step < 0) { step = 0; sub = 0; }
-    else if (sub + 1 < mmaSteps) sub++;
-    else { step++; sub = 0; }
-    runState();
-  }
-  document.getElementById('next').addEventListener('click', () => { stop(); advance(); });
-  document.getElementById('reset').addEventListener('click', () => { stop(); step = -1; sub = 0; runState(); });
-  document.getElementById('play').addEventListener('click', () => {
-    if (timer) { stop(); return; }
-    document.getElementById('play').textContent = '暂停';
-    timer = setInterval(() => advance(), 900);
+  el.logical.addEventListener('click', e => {
+    const b = e.target.closest('.pack');
+    if (!b) return;
+    el.swRow.value = b.dataset.r;
+    el.swCol.value = b.dataset.c;
+    renderSwizzle();
   });
-  [stagesEl, bkEl, chunksEl, mTilesEl, nTilesEl].forEach(el => el.addEventListener('change', () => {
+
+  el.next.addEventListener('click', () => { stop(); advance(1); });
+  el.prev.addEventListener('click', () => { stop(); advance(-1); });
+  $('reset').addEventListener('click', restart);
+  el.play.addEventListener('click', () => {
+    if (timer) { stop(); return; }
+    el.play.textContent = '暂停';
+    timer = setInterval(() => advance(1), 900);
+  });
+  document.addEventListener('keydown', e => {
+    if (e.target.closest('select') || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'ArrowRight') { stop(); advance(1); }
+    else if (e.key === 'ArrowLeft') { stop(); advance(-1); }
+    else if (e.key === 'Home') restart();
+    else if (e.key === ' ' && !e.target.closest('button')) { e.preventDefault(); el.play.click(); }
+  });
+  [el.tile, el.stages, el.bk, el.chunks, el.mTiles, el.nTiles].forEach(s => s.addEventListener('change', () => {
     updateCtaOptions();
-    stop(); step = -1; sub = 0; runState();
+    updateSwizzleOptions();
+    renderSwizzle();
+    restart();
   }));
-  ctaEl.addEventListener('change', () => { stop(); runState(); });
-  swizzleRowEl.innerHTML = Array.from({length: 8}, (_, i) => `<option value="${i}">${i}</option>`).join('');
-  swizzleColEl.innerHTML = Array.from({length: 8}, (_, i) => `<option value="${i}">${i}</option>`).join('');
-  swizzleRowEl.addEventListener('change', renderSwizzle);
-  swizzleColEl.addEventListener('change', renderSwizzle);
-  renderSwizzle();
+  el.cta.addEventListener('change', render);
+  [el.swOperand, el.swRow, el.swCol].forEach(s => s.addEventListener('change', () => {
+    if (s === el.swOperand) updateSwizzleOptions();
+    renderSwizzle();
+  }));
+
+  el.swRow.innerHTML = options(8);
   updateCtaOptions();
-  runState();
+  updateSwizzleOptions();
+  renderSwizzle();
+  render();
 })();
 </script>
 </body>
