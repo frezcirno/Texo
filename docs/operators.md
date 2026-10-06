@@ -239,6 +239,16 @@ before consuming outputs on the CPU.
   FP32 arithmetic finite. M/N must be positive, K nonnegative, and storage must
   not overlap between inputs and output. K=0 fills C with zero_point_C without
   reading A/B. See `make run-mm-int8` for exact CPU-reference checks.
+- `mm_int4.cu`: W4A16 `y[M,N] = x[M,K] @ W^T` with FP16 x/scales/y and packed
+  `w_q[N,K/2]` (high nibble = even k, value = nibble - 8, one scale per
+  `group_size` run of K). The [LeetGPU contract](https://leetgpu.com/challenges/int4-weight-only-quantized-matmul)
+  gives M/N/K in [1,8192], K divisible by 2 and group_size in {2,...,128}, and
+  atol = rtol = 0.01 against an FP32 reference. For group_size >= 16 and
+  K % 32 == 0, FP16 mma.sync multiplies x by the exact q-8 and the
+  accumulator is rescaled by s_g/s_{g+1} between groups (factors from a small
+  pre-pass into scratch); other shapes use an FP32 SIMT kernel. Folding scales
+  into FP16 weights fails atol near zero at 4096^3. `make run-mm-int4` checks
+  the official cases, tile edges, zero scales and sampled 4096^3 rows.
 - `mc_int.cu`: Monte Carlo integration from supplied FP32 function values
   `y_samples[n_samples]`: the intended result is
   `sum(y_samples) * (b-a) / n_samples`, written to one FP32 output element.

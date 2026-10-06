@@ -16,7 +16,7 @@ PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
             conv3d_bench mv_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test geglu_test
 DOT_TESTS := dot_test dot_fp16_test
-BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test batched_mm_fp16_test alibi_test mm_int8_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test rms_norm_test group_norm_test layer_norm_test max_pooling_2d_test count_test count3d_test slice_sum_test slice_sum2d_test slice_sum3d_test max_subarray_sum_test 2d_jacobi_stencil_test dequantization_test rope_test sparse_mm_test stream_compaction_test segmented_scan_test fft2d_test adderboard_test
+BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test batched_mm_fp16_test alibi_test mm_int8_test mm_int4_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test rms_norm_test group_norm_test layer_norm_test max_pooling_2d_test count_test count3d_test slice_sum_test slice_sum2d_test slice_sum3d_test max_subarray_sum_test 2d_jacobi_stencil_test dequantization_test rope_test sparse_mm_test stream_compaction_test segmented_scan_test fft2d_test adderboard_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS) $(DOT_TESTS) lr_newton_test
 GEMM_BENCHES := gemm_bench gemm_tiled_bench gemm_wmma_bench gemm_wmma_tiled_bench \
                 gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_schedule_bench \
@@ -33,6 +33,7 @@ DOT_ARGS ?=
 DOT_FP16_ARGS ?=
 SOFTMAX_ARGS ?=
 MM_INT8_ARGS ?=
+MM_INT4_ARGS ?=
 MC_INT_ARGS ?=
 MAT_POW_ARGS ?=
 NN_ARGS ?=
@@ -89,7 +90,7 @@ endif
         run-mv run-gemm run-cat-ce run-mse run-gauss-blur run-max-compare run-top-k \
         run-relu run-leaky-relu run-silu run-swiglu run-clip run-mat-add \
         run-mat-copy run-reverse run-conv1d run-rainbow run-interleave \
-        run-sigmoid run-geglu run-rgb2grayscale run-batched-mm run-mm-int8 run-lr run-mc-int \
+        run-sigmoid run-geglu run-rgb2grayscale run-batched-mm run-mm-int8 run-mm-int4 run-lr run-mc-int \
         run-batched-mm-fp16 sanitize-batched-mm-fp16 \
         run-alibi sanitize-alibi \
         run-dot run-dot-fp16 sanitize-dot sanitize-dot-fp16 \
@@ -371,6 +372,8 @@ run-dot-fp16: $(BIN_DIR)/dot_fp16_test
 	$< $(DOT_FP16_ARGS)
 run-mm-int8: $(BIN_DIR)/mm_int8_test
 	$< $(MM_INT8_ARGS)
+run-mm-int4: $(BIN_DIR)/mm_int4_test
+	$< $(MM_INT4_ARGS)
 run-lr: $(BIN_DIR)/lr_test $(BIN_DIR)/lr_newton_test
 	$(BIN_DIR)/lr_test
 	$(BIN_DIR)/lr_newton_test
@@ -676,6 +679,7 @@ help:
 	@echo '               --large checks N=99999999/100000000 and decimal precision; --list-cases lists cases'
 	@echo 'sanitize-dot / sanitize-dot-fp16 Run all four sanitizer tools; accept the respective args'
 	@echo 'run-mm-int8     Check INT8 quantization; MM_INT8_ARGS=--large checks 8192x4096x2048'
+	@echo 'run-mm-int4     Check W4A16 matmul; MM_INT4_ARGS=--bench times 4096^3, --quick skips large'
 	@echo 'run-mc-int      Check Monte Carlo integration; MC_INT_ARGS=--large checks 10M/100M samples'
 	@echo 'sanitize-mc-int Run Monte Carlo memcheck/initcheck/racecheck/synccheck checks'
 	@echo 'run-mat-pow     Check matrix powers; MAT_POW_ARGS=--large checks N=511/512/1023/1024'
