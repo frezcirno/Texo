@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cuda_runtime.h>
 
 template <typename T> __device__ inline T warp_sum(T val) {
@@ -26,18 +27,48 @@ template <size_t BLOCK_SIZE, typename T> __device__ inline T block_sum(T val) {
   return val;
 }
 
+// 通用版本：逐元素读取，适用于任意元素类型
+template <typename T3, typename T1, typename T2>
+__device__ inline T3 row_dot(const T1 *__restrict__ a, const T2 *__restrict__ x,
+                             int N, int tid, int stride) {
+  T3 sum = 0.0f;
+  for (int i = tid; i < N; i += stride) {
+    sum += a[i] * x[i];
+  }
+  return sum;
+}
+
+// float 版本：行首和 x 都按 16 字节对齐时用 float4 读取。A 只读一次，用
+// 流式加载避免把 x 挤出缓存；x 被每一行复用，走只读缓存。
+template <typename T3>
+__device__ inline T3 row_dot(const float *__restrict__ a,
+                             const float *__restrict__ x, int N, int tid,
+                             int stride) {
+  if (N % 4 != 0 ||
+      (reinterpret_cast<uintptr_t>(a) | reinterpret_cast<uintptr_t>(x)) % 16 !=
+          0) {
+    return row_dot<T3, float, float>(a, x, N, tid, stride);
+  }
+  const float4 *a4 = reinterpret_cast<const float4 *>(a);
+  const float4 *x4 = reinterpret_cast<const float4 *>(x);
+  T3 sum = 0.0f;
+#pragma unroll 4
+  for (int i = tid; i < N / 4; i += stride) {
+    const float4 av = __ldcs(a4 + i);
+    const float4 xv = __ldg(x4 + i);
+    sum += av.x * xv.x + av.y * xv.y + av.z * xv.z + av.w * xv.w;
+  }
+  return sum;
+}
+
 template <int BLOCK_SIZE, typename T1, typename T2, typename T3>
 __global__ void mv_one_block_per_row(const T1 *__restrict__ A, // (M, N)
                                      const T2 *__restrict__ B, // (N,)
                                      T3 *__restrict__ C,       // (M,)
                                      size_t M, size_t N) {
   const size_t row = blockIdx.x;
-  T3 sum = 0.0f;
-
   // 同一个 block 的线程分担这一行的列
-  for (int i = threadIdx.x; i < N; i += BLOCK_SIZE) {
-    sum += A[row * N + i] * B[i];
-  }
+  T3 sum = row_dot<T3>(A + row * N, B, N, threadIdx.x, BLOCK_SIZE);
 
   sum = block_sum<BLOCK_SIZE>(sum);
 
@@ -61,10 +92,7 @@ __global__ void mv_one_warp_per_row(const T1 *__restrict__ A, // (M, N)
     return;
   }
 
-  T3 sum = 0.0f;
-  for (int i = lane; i < N; i += 32) {
-    sum += A[row * N + i] * B[i];
-  }
+  T3 sum = row_dot<T3>(A + row * N, B, N, lane, 32);
 
   sum = warp_sum(sum);
 
