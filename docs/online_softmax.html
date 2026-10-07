@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Online Softmax 原理</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171e2e;
+    --line: #2a3550;
+    --text: #e6e9f0;
+    --muted: #8a94ab;
+    --blue: #5b9dff;
+    --green: #3ccf91;
+    --orange: #ffa94d;
+    --red: #ff6b6b;
+    --purple: #b48cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #070a10; color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; overflow: hidden; }
+  #viewport { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #stage { width: 1280px; height: 720px; position: relative; background: var(--bg);
+    border-radius: 12px; overflow: hidden; transform-origin: center center; box-shadow: 0 0 60px #000; }
+  .slide { position: absolute; inset: 0; padding: 56px 72px; opacity: 0; pointer-events: none;
+    transition: opacity .45s ease; }
+  .slide.active { opacity: 1; pointer-events: auto; }
+  h1 { font-size: 56px; font-weight: 700; letter-spacing: 1px; }
+  h2 { font-size: 34px; font-weight: 650; margin-bottom: 28px; }
+  h2 small { font-size: 18px; color: var(--muted); font-weight: 400; margin-left: 12px; }
+  p, li { font-size: 22px; line-height: 1.7; }
+  .muted { color: var(--muted); }
+  .blue { color: var(--blue); } .green { color: var(--green); } .orange { color: var(--orange); }
+  .red { color: var(--red); } .purple { color: var(--purple); }
+  .math { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; font-size: 26px; }
+  .formula { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 26px; display: inline-block; font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif;
+    font-size: 28px; }
+  sub, sup { font-size: 62%; }
+  code, pre { font-family: "JetBrains Mono", "Fira Code", Consolas, monospace; }
+  .frag { opacity: 0; transform: translateY(12px); transition: opacity .45s, transform .45s; }
+  .frag.on { opacity: 1; transform: none; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 24px; }
+  .row { display: flex; gap: 24px; align-items: flex-start; }
+
+  /* title */
+  #s-title { display: flex; flex-direction: column; justify-content: center; }
+  #s-title .sub { font-size: 26px; color: var(--muted); margin-top: 18px; }
+  #s-title .hint { position: absolute; bottom: 48px; font-size: 18px; color: var(--muted); }
+
+  /* array cells */
+  .cells { display: flex; gap: 6px; }
+  .cell { width: 64px; height: 52px; border-radius: 8px; background: #212a3f; border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center; font-size: 22px; font-family: Consolas, monospace;
+    transition: background .35s, border-color .35s, transform .35s; }
+  .cell.done { background: #1d3350; border-color: var(--blue); }
+  .cell.cur { background: #2f5d3f; border-color: var(--green); transform: translateY(-6px); }
+  .cell.newmax { background: #5a3a14; border-color: var(--orange); transform: translateY(-6px); }
+
+  /* pass rows (traffic) */
+  .pass { display: flex; align-items: center; gap: 18px; margin: 12px 0; }
+  .pass .label { width: 290px; font-size: 20px; }
+  .track { position: relative; }
+  .scanner { position: absolute; left: 0; top: -4px; bottom: -4px; width: 0; border-radius: 8px;
+    background: linear-gradient(90deg, rgba(91,157,255,.12), rgba(91,157,255,.45));
+    border-right: 3px solid var(--blue); transition: width 1.4s linear; pointer-events: none; }
+  .scanner.full { width: 100%; }
+  .scanner.w { background: linear-gradient(90deg, rgba(60,207,145,.12), rgba(60,207,145,.4)); border-right-color: var(--green); }
+  .traffic { font-size: 20px; width: 150px; text-align: right; font-family: Consolas, monospace; }
+  .total { font-size: 30px; margin-top: 22px; }
+  .total b { font-family: Consolas, monospace; }
+
+  /* bars */
+  .bars { position: relative; height: 190px; display: flex; align-items: flex-end; gap: 6px;
+    border-bottom: 2px solid var(--line); padding-top: 10px; }
+  .bars .ref { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--muted); opacity: .5; }
+  .bars .ref span { position: absolute; right: 0; top: -22px; font-size: 14px; color: var(--muted); }
+  .bar { width: 64px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+  .bar .fill { width: 100%; border-radius: 6px 6px 0 0; background: var(--blue);
+    transition: height .7s cubic-bezier(.3,.7,.2,1), background .4s; }
+  .bar .fill.fresh { background: var(--green); }
+  .bar .fill.scaled { background: var(--orange); }
+  .bar .fill.ghost { background: transparent; }
+  .bar .v { font-size: 13px; color: var(--muted); margin-bottom: 4px; font-family: Consolas, monospace; height: 16px; }
+  .xlabels { display: flex; gap: 6px; margin-top: 6px; }
+  .xlabels div { width: 64px; text-align: center; font-size: 15px; color: var(--muted); font-family: Consolas, monospace; }
+
+  /* state panel */
+  .state { display: flex; gap: 18px; }
+  .state .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px;
+    min-width: 170px; transition: border-color .3s, box-shadow .3s; }
+  .state .box .k { font-size: 16px; color: var(--muted); }
+  .state .box .val { font-size: 34px; font-family: Consolas, monospace; }
+  .state .box.flash { border-color: var(--orange); box-shadow: 0 0 18px rgba(255,169,77,.35); }
+  .calc { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; font-size: 23px; line-height: 1.75;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 22px; min-height: 128px; }
+  .calc .num { font-family: Consolas, monospace; font-size: 20px; }
+  .note { font-size: 19px; padding: 10px 16px; border-radius: 8px; margin-top: 12px; }
+  .note.warn { background: rgba(255,169,77,.12); border: 1px solid rgba(255,169,77,.5); color: #ffd3a1; }
+  .note.ok { background: rgba(60,207,145,.12); border: 1px solid rgba(60,207,145,.5); color: #a9f0cf; }
+
+  /* tree */
+  #tree { position: relative; height: 430px; margin-top: 4px; }
+  #tree svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #tree line { stroke: var(--line); stroke-width: 2; transition: stroke .4s, opacity .4s; }
+  #tree line.on { stroke: var(--blue); }
+  .node { position: absolute; width: 122px; margin-left: -61px; padding: 6px 4px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--line); text-align: center; font-family: Consolas, monospace;
+    font-size: 15px; line-height: 1.45; opacity: .12; transition: opacity .45s, border-color .45s, transform .45s; }
+  .node.on { opacity: 1; }
+  .node.fresh { border-color: var(--green); transform: scale(1.06); }
+  .node .m { color: var(--orange); } .node .d { color: var(--blue); }
+  .lvl { position: absolute; left: 0; font-size: 16px; color: var(--muted); width: 130px; }
+
+  /* gpu pipeline */
+  .pipe { display: flex; align-items: stretch; gap: 14px; }
+  .stagebox { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .stagebox h4 { font-size: 19px; margin-bottom: 6px; }
+  .stagebox p { font-size: 16px; line-height: 1.55; color: #c3c9d8; }
+  .arrow { align-self: center; font-size: 28px; color: var(--muted); }
+  .cmp { display: flex; gap: 40px; align-items: flex-end; height: 150px; margin-top: 10px; }
+  .cmp .col { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .cmp .colbar { width: 110px; border-radius: 8px 8px 0 0; transition: height 1s cubic-bezier(.3,.7,.2,1); height: 0; }
+
+  pre { background: #0b1019; border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px;
+    font-size: 16.5px; line-height: 1.55; color: #cdd5e5; }
+  pre .c { color: #6a7794; } pre .k { color: #c792ea; } pre .t { color: #82aaff; } pre .h { background: rgba(255,169,77,.16); display: inline-block; width: 100%; }
+
+  /* nav */
+  #nav { position: fixed; bottom: 14px; right: 18px; display: flex; gap: 8px; align-items: center; z-index: 10;
+    font-size: 14px; color: var(--muted); }
+  #nav button { background: #1b2336; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 12px; cursor: pointer; font-size: 14px; }
+  #nav button:hover { border-color: var(--blue); }
+  #progress { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--blue); transition: width .4s; }
+</style>
+</head>
+<body>
+<div id="viewport">
+<div id="stage">
+
+  <!-- 1. 标题 -->
+  <section class="slide" id="s-title">
+    <h1>Online Softmax</h1>
+    <div class="sub">只遍历一遍，同时求出最大值和指数和</div>
+    <div class="sub" style="font-size:20px;margin-top:40px">
+      <span class="blue">数值稳定</span> · <span class="green">可并行合并</span> · <span class="orange">更少的显存读写</span>
+    </div>
+    <div class="hint">→ / 空格：下一步 &nbsp;·&nbsp; ←：上一步 &nbsp;·&nbsp; P：自动播放 &nbsp;·&nbsp; F：全屏</div>
+  </section>
+
+  <!-- 2. 定义与数值稳定 -->
+  <section class="slide" id="s-def">
+    <h2>Softmax 与数值稳定</h2>
+    <div class="formula">y<sub>i</sub> = e<sup>x<sub>i</sub></sup> / Σ<sub>j</sub> e<sup>x<sub>j</sub></sup></div>
+    <div class="frag" data-step="1" style="margin-top:28px">
+      <p>直接算会溢出：float32 最大约 3.4×10<sup>38</sup>，而 <span class="math">e<sup>89</sup></span> ≈ 4.5×10<sup>38</sup> → <span class="red">inf</span>，结果变成 <span class="red">inf / inf = NaN</span></p>
+    </div>
+    <div class="frag" data-step="2" style="margin-top:22px">
+      <p>分子分母同乘 <span class="math">e<sup>−m</sup></span>，取 <span class="math">m = max<sub>j</sub> x<sub>j</sub></span>：</p>
+      <div class="formula" style="margin-top:10px">y<sub>i</sub> = e<sup>x<sub>i</sub> − m</sup> / Σ<sub>j</sub> e<sup>x<sub>j</sub> − m</sup></div>
+      <p class="muted" style="margin-top:10px">每一项 e<sup>x−m</sup> ∈ (0, 1]，分母 ≥ 1，永不溢出。</p>
+    </div>
+    <div class="frag" data-step="3" style="margin-top:22px">
+      <p>代价：<span class="orange">必须先知道 m</span>，才能开始求分母 <span class="math">d = Σ e<sup>x<sub>j</sub> − m</sup></span>。</p>
+    </div>
+  </section>
+
+  <!-- 3. 朴素三遍 -->
+  <section class="slide" id="s-naive">
+    <h2>朴素做法：遍历三遍 <small>对应 softmax_3kernel.cu</small></h2>
+    <div id="naive-passes"></div>
+    <div class="total frag" data-step="3">显存流量：<b class="red">读 3N + 写 2N = 5N</b>，外加 3 次 kernel launch</div>
+    <div class="frag" data-step="3" style="margin-top:14px">
+      <p class="muted">Pass 1 和 Pass 2 读的是同一份输入。能不能把它们合成一遍？</p>
+    </div>
+  </section>
+
+  <!-- 4. 推导 -->
+  <section class="slide" id="s-derive">
+    <h2>核心想法：边读边维护 (m, d)</h2>
+    <p>读到第 i 个元素时，只记两个数：</p>
+    <div class="row" style="margin-top:12px">
+      <div class="formula">m<sub>i</sub> = max(x<sub>1</sub>, …, x<sub>i</sub>)</div>
+      <div class="formula">d<sub>i</sub> = Σ<sub>j≤i</sub> e<sup>x<sub>j</sub> − m<sub>i</sub></sup></div>
+    </div>
+    <div class="frag" data-step="1" style="margin-top:26px">
+      <p>新元素 x<sub>i</sub> 到来时，<span class="orange">之前的和是以 m<sub>i−1</sub> 为基准算的</span>，换成新基准只需乘一个修正因子：</p>
+      <p class="math" style="margin-top:8px">e<sup>x<sub>j</sub> − m<sub>i</sub></sup> = e<sup>x<sub>j</sub> − m<sub>i−1</sub></sup> · <span class="orange">e<sup>m<sub>i−1</sub> − m<sub>i</sub></sup></span></p>
+    </div>
+    <div class="frag" data-step="2" style="margin-top:20px">
+      <p>于是得到递推：</p>
+      <div class="formula" style="margin-top:8px;border-color:var(--green)">
+        m<sub>i</sub> = max(m<sub>i−1</sub>, x<sub>i</sub>)
+        &nbsp;&nbsp;&nbsp;
+        d<sub>i</sub> = d<sub>i−1</sub> · <span class="orange">e<sup>m<sub>i−1</sub> − m<sub>i</sub></sup></span> + e<sup>x<sub>i</sub> − m<sub>i</sub></sup>
+      </div>
+      <p class="muted" style="margin-top:10px">初值 m<sub>0</sub> = −∞，d<sub>0</sub> = 0。最大值没变时修正因子 = 1；变大时旧的和整体缩小。</p>
+    </div>
+  </section>
+
+  <!-- 5. 逐步演示 -->
+  <section class="slide" id="s-walk">
+    <h2>逐步演示 <small>柱高 = e<sup>x<sub>j</sub> − m</sup>（以当前最大值为基准）</small></h2>
+    <div class="row">
+      <div>
+        <div class="cells" id="walk-cells"></div>
+        <div style="height:18px"></div>
+        <div class="bars" id="walk-bars"><div class="ref" style="bottom:150px"><span>1.0</span></div></div>
+        <div class="xlabels" id="walk-xl"></div>
+      </div>
+      <div style="flex:1">
+        <div class="state">
+          <div class="box" id="walk-mbox"><div class="k">运行最大值 m</div><div class="val orange" id="walk-m">−∞</div></div>
+          <div class="box" id="walk-dbox"><div class="k">运行指数和 d</div><div class="val blue" id="walk-d">0</div></div>
+        </div>
+        <div class="calc" id="walk-calc" style="margin-top:14px"></div>
+        <div id="walk-note"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. 合并 -->
+  <section class="slide" id="s-merge">
+    <h2>两段结果也能合并：⊕ 运算</h2>
+    <div class="formula">(m<sub>a</sub>, d<sub>a</sub>) ⊕ (m<sub>b</sub>, d<sub>b</sub>) = ( m, &nbsp;d<sub>a</sub>·e<sup>m<sub>a</sub>−m</sup> + d<sub>b</sub>·e<sup>m<sub>b</sub>−m</sup> ), &nbsp; m = max(m<sub>a</sub>, m<sub>b</sub>)</div>
+    <div class="row" style="margin-top:26px;gap:60px">
+      <div>
+        <div class="muted" style="font-size:18px;margin-bottom:6px">段 A = [2, 1, 4, 3] → <span id="mg-a"></span></div>
+        <div class="bars" id="mg-bars-a"><div class="ref" style="bottom:150px"><span>1.0</span></div></div>
+      </div>
+      <div>
+        <div class="muted" style="font-size:18px;margin-bottom:6px">段 B = [7, 0, 5, 6] → <span id="mg-b"></span></div>
+        <div class="bars" id="mg-bars-b"><div class="ref" style="bottom:150px"><span>1.0</span></div></div>
+      </div>
+    </div>
+    <div id="mg-calc" class="calc" style="margin-top:20px;min-height:0"></div>
+    <div class="frag" data-step="2" style="margin-top:14px">
+      <p>⊕ 满足<span class="green">结合律</span>和<span class="green">交换律</span>，单位元是 (−∞, 0) → 可以任意切分、任意顺序归约，<b>天然适合并行</b>。</p>
+    </div>
+  </section>
+
+  <!-- 7. 树形归约 -->
+  <section class="slide" id="s-tree">
+    <h2>并行树形归约 <small>每个叶子是 (x<sub>i</sub>, 1)</small></h2>
+    <div id="tree"><svg id="tree-svg"></svg></div>
+    <div id="tree-note" class="muted" style="font-size:19px;margin-top:-6px"></div>
+  </section>
+
+  <!-- 8. GPU 映射 -->
+  <section class="slide" id="s-gpu">
+    <h2>映射到 GPU：两遍完成</h2>
+    <div class="pipe">
+      <div class="stagebox frag" data-step="1">
+        <h4 class="green">① 线程内</h4>
+        <p>grid-stride 循环读 float4，用递推在寄存器里维护 (m, d)</p>
+      </div>
+      <div class="arrow frag" data-step="2">→</div>
+      <div class="stagebox frag" data-step="2">
+        <h4 class="blue">② warp / block</h4>
+        <p>__shfl_down_sync 做 ⊕，<br>再经 shared memory 合并各 warp</p>
+      </div>
+      <div class="arrow frag" data-step="3">→</div>
+      <div class="stagebox frag" data-step="3">
+        <h4 class="purple">③ 跨 block</h4>
+        <p>每个 block 写 partial (m, d)，<br>最后一个完成的 block 合并成全局 (M, D)</p>
+      </div>
+      <div class="arrow frag" data-step="4">→</div>
+      <div class="stagebox frag" data-step="4">
+        <h4 class="orange">④ 输出</h4>
+        <p>y = e<sup>x − M</sup> · (1/D)<br>再读一遍输入，写一遍输出</p>
+      </div>
+    </div>
+    <div class="row frag" data-step="5" style="margin-top:28px;gap:60px;align-items:flex-end">
+      <div>
+        <div class="pass"><div class="label">Pass 1：online (m, d) &nbsp;<span class="muted">读 N</span></div></div>
+        <div class="pass"><div class="label">Pass 2：输出 &nbsp;<span class="muted">读 N 写 N</span></div></div>
+      </div>
+      <div class="cmp">
+        <div class="col"><div class="colbar" id="cmp-naive" style="background:var(--red)"></div><div>三遍 5N</div></div>
+        <div class="col"><div class="colbar" id="cmp-online" style="background:var(--green)"></div><div>Online 3N</div></div>
+      </div>
+      <div style="font-size:22px">显存流量 <b class="green">−40%</b><br><span class="muted" style="font-size:18px">kernel launch 3 → 2</span></div>
+    </div>
+  </section>
+
+  <!-- 9. 代码 -->
+  <section class="slide" id="s-code">
+    <h2>代码骨架</h2>
+<pre><span class="k">struct</span> <span class="t">MD</span> { <span class="t">float</span> m, d; };
+
+<span class="c">// ⊕：合并两段</span>
+__device__ <span class="t">MD</span> combine(<span class="t">MD</span> a, <span class="t">MD</span> b) {
+  <span class="t">float</span> m = fmaxf(a.m, b.m);
+<span id="code-nan">  <span class="c">// 两边都是 −∞（空线程）时 (−∞)−(−∞) = NaN，必须特判</span>
+  <span class="k">if</span> (m == -INFINITY) <span class="k">return</span> {m, 0.f};</span>
+  <span class="k">return</span> {m, a.d * __expf(a.m - m) + b.d * __expf(b.m - m)};
+}
+
+<span class="c">// Pass 1：每个线程单遍扫描</span>
+<span class="t">MD</span> s = {-INFINITY, 0.f};
+<span id="code-loop"><span class="k">for</span> (<span class="t">int</span> i = tid; i &lt; N; i += stride) {
+  <span class="t">float</span> x = input[i], m = fmaxf(s.m, x);
+  s.d = s.d * __expf(s.m - m) + __expf(x - m);   <span class="c">// 递推</span>
+  s.m = m;
+}</span>
+s = block_reduce(s, combine);  <span class="c">// warp shuffle + shared memory，再跨 block 合并</span>
+
+<span class="c">// Pass 2</span>
+output[i] = __expf(input[i] - M) * inv_D;</pre>
+    <div class="frag" data-step="1" style="margin-top:12px">
+      <p><span class="orange">坑：</span>combine 里两边 m 都是 −∞ 时会得到 NaN；线程循环里 s.m 初值是 −∞，但 x 有限，<span class="math">e<sup>−∞</sup> = 0</span> 没问题。</p>
+    </div>
+  </section>
+
+  <!-- 10. 总结 -->
+  <section class="slide" id="s-sum">
+    <h2>总结</h2>
+    <ul style="margin-left:28px">
+      <li class="frag" data-step="1">递推 <span class="math">d<sub>i</sub> = d<sub>i−1</sub>·e<sup>m<sub>i−1</sub>−m<sub>i</sub></sup> + e<sup>x<sub>i</sub>−m<sub>i</sub></sup></span>：最大值变了就给旧的和乘一个修正因子</li>
+      <li class="frag" data-step="2">(m, d) 的 ⊕ 满足结合律 → 线程、warp、block、grid 各层都用同一个合并函数</li>
+      <li class="frag" data-step="3">三遍 → 两遍：显存流量 5N → 3N，数值稳定性不变</li>
+      <li class="frag" data-step="4">同样的思路推广到 <span class="purple">FlashAttention</span>：除了 (m, d)，再维护一个输出累加器 O，最大值更新时一起乘修正因子，于是不必存下整个 N×N 的注意力矩阵</li>
+    </ul>
+    <p class="frag muted" data-step="5" style="margin-top:40px;font-size:18px">参考：Milakov &amp; Gimelshein, “Online normalizer calculation for softmax”, 2018</p>
+  </section>
+
+  <div id="progress"></div>
+</div>
+</div>
+<div id="nav">
+  <span id="pos"></span>
+  <button id="b-prev">←</button>
+  <button id="b-play">▶ 自动</button>
+  <button id="b-next">→</button>
+</div>
+
+<script>
+const X = [2, 1, 4, 3, 7, 0, 5, 6];
+const BAR_H = 150;
+const f3 = v => (v === -Infinity ? '−∞' : (Number.isInteger(v) ? String(v) : v.toFixed(3)));
+const sub = s => s.replace(/-/g, '−');
+
+// running states for X
+const states = [{ m: -Infinity, d: 0 }];
+X.forEach((x, i) => {
+  const p = states[i];
+  const m = Math.max(p.m, x);
+  states.push({ m, d: p.d * Math.exp(p.m - m) + Math.exp(x - m) });
+});
+
+function combine(a, b) {
+  const m = Math.max(a.m, b.m);
+  if (m === -Infinity) return { m, d: 0 };
+  return { m, d: a.d * Math.exp(a.m - m) + b.d * Math.exp(b.m - m) };
+}
+
+function makeBars(el, n) {
+  for (let i = 0; i < n; i++) {
+    const b = document.createElement('div');
+    b.className = 'bar';
+    b.innerHTML = '<div class="v"></div><div class="fill ghost" style="height:0"></div>';
+    el.appendChild(b);
+  }
+  return [...el.querySelectorAll('.bar')];
+}
+function setBar(bar, val, cls) {
+  const fill = bar.querySelector('.fill');
+  fill.className = 'fill' + (cls ? ' ' + cls : '');
+  fill.style.height = (val == null ? 0 : Math.max(val * BAR_H, 2)) + 'px';
+  bar.querySelector('.v').textContent = val == null ? '' : val.toFixed(3);
+}
+
+const ctrl = {};
+
+// ---------- 朴素三遍 ----------
+(() => {
+  const host = document.getElementById('naive-passes');
+  const rows = [
+    ['Pass 1：求 max', '读 N', ''],
+    ['Pass 2：exp 并求和', '读 N 写 N', 'w'],
+    ['Pass 3：除以和', '读 N 写 N', 'w'],
+  ];
+  const scanners = rows.map(([label, traffic, w]) => {
+    const r = document.createElement('div');
+    r.className = 'pass';
+    r.innerHTML = `<div class="label">${label}</div>
+      <div class="track"><div class="cells">${X.map(x => `<div class="cell">${x}</div>`).join('')}</div>
+      <div class="scanner ${w}"></div></div><div class="traffic muted">${traffic}</div>`;
+    host.appendChild(r);
+    return r.querySelector('.scanner');
+  });
+  ctrl['s-naive'] = { steps: 3, render(k) { scanners.forEach((s, i) => s.classList.toggle('full', i < k)); } };
+})();
+
+// ---------- 逐步演示 ----------
+(() => {
+  const cells = document.getElementById('walk-cells');
+  cells.innerHTML = X.map(x => `<div class="cell">${x}</div>`).join('');
+  const cellEls = [...cells.children];
+  const bars = makeBars(document.getElementById('walk-bars'), X.length);
+  document.getElementById('walk-xl').innerHTML = X.map((_, i) => `<div>x<sub>${i + 1}</sub></div>`).join('');
+  const mEl = document.getElementById('walk-m'), dEl = document.getElementById('walk-d');
+  const mBox = document.getElementById('walk-mbox'), dBox = document.getElementById('walk-dbox');
+  const calc = document.getElementById('walk-calc'), note = document.getElementById('walk-note');
+  const N = X.length;
+
+  ctrl['s-walk'] = {
+    steps: N + 1,
+    render(k) {
+      const i = Math.min(k, N);
+      const s = states[i], p = states[Math.max(i - 1, 0)];
+      const raised = i >= 2 && s.m > p.m;
+      cellEls.forEach((c, j) => {
+        c.className = 'cell' + (j < i - 1 ? ' done' : '') + (j === i - 1 ? (raised || i === 1 ? ' newmax' : ' cur') : '');
+      });
+      bars.forEach((b, j) => {
+        if (j >= i) return setBar(b, null, 'ghost');
+        const cls = j === i - 1 ? 'fresh' : (raised ? 'scaled' : '');
+        setBar(b, Math.exp(X[j] - s.m), cls);
+      });
+      mEl.textContent = sub(f3(s.m));
+      dEl.textContent = f3(s.d);
+      mBox.classList.toggle('flash', raised || i === 1);
+      dBox.classList.toggle('flash', raised);
+
+      if (i === 0) {
+        calc.innerHTML = '初始化：m<sub>0</sub> = −∞，d<sub>0</sub> = 0<br><span class="muted">按 → 读入第一个元素</span>';
+        note.innerHTML = '';
+        return;
+      }
+      const x = X[i - 1];
+      const factor = Math.exp(p.m - s.m);
+      const fac = p.m === -Infinity ? '0' : factor.toFixed(3);
+      calc.innerHTML =
+        `读入 x<sub>${i}</sub> = ${x}<br>` +
+        `m<sub>${i}</sub> = max(${sub(f3(p.m))}, ${x}) = <b class="orange">${s.m}</b><br>` +
+        `d<sub>${i}</sub> = <span class="num">${f3(p.d)}</span> · <span class="orange">e<sup>${sub(f3(p.m))} − ${s.m}</sup></span> + e<sup>${x} − ${s.m}</sup>` +
+        ` = <span class="num">${f3(p.d)}×${fac} + ${Math.exp(x - s.m).toFixed(3)}</span> = <b class="blue num">${f3(s.d)}</b>`;
+      if (raised) {
+        note.innerHTML = `<div class="note warn">最大值 ${p.m} → ${s.m}：旧的和整体乘以 e<sup>${sub(String(p.m - s.m))}</sup> = ${factor.toFixed(4)}（橙色柱子同步缩小）</div>`;
+      } else if (i === 1) {
+        note.innerHTML = '<div class="note warn">m<sub>0</sub> = −∞，修正因子 e<sup>−∞</sup> = 0，d<sub>0</sub> 本来就是 0</div>';
+      } else if (i === N) {
+        const direct = X.reduce((a, v) => a + Math.exp(v - s.m), 0);
+        note.innerHTML = `<div class="note ok">最终 (m, d) = (${s.m}, ${s.d.toFixed(4)})，直接计算 Σ e<sup>x<sub>j</sub>−${s.m}</sup> = ${direct.toFixed(4)}，一致 ✓<br>只遍历了一遍。</div>`;
+      } else {
+        note.innerHTML = `<div class="note ok">${x} ≤ ${p.m}，最大值不变，修正因子 = 1，直接累加</div>`;
+      }
+    },
+  };
+})();
+
+// ---------- 合并 ----------
+(() => {
+  const A = X.slice(0, 4), B = X.slice(4);
+  const red = arr => arr.reduce((s, x) => combine(s, { m: x, d: 1 }), { m: -Infinity, d: 0 });
+  const sa = red(A), sb = red(B), sab = combine(sa, sb);
+  const barsA = makeBars(document.getElementById('mg-bars-a'), 4);
+  const barsB = makeBars(document.getElementById('mg-bars-b'), 4);
+  document.getElementById('mg-a').innerHTML = `(m<sub>a</sub>, d<sub>a</sub>) = (${sa.m}, ${sa.d.toFixed(3)})`;
+  document.getElementById('mg-b').innerHTML = `(m<sub>b</sub>, d<sub>b</sub>) = (${sb.m}, ${sb.d.toFixed(3)})`;
+  const calc = document.getElementById('mg-calc');
+  ctrl['s-merge'] = {
+    steps: 2,
+    render(k) {
+      const baseA = k >= 1 ? sab.m : sa.m, baseB = k >= 1 ? sab.m : sb.m;
+      A.forEach((x, j) => setBar(barsA[j], Math.exp(x - baseA), k >= 1 && sa.m < sab.m ? 'scaled' : ''));
+      B.forEach((x, j) => setBar(barsB[j], Math.exp(x - baseB), ''));
+      calc.style.display = k >= 1 ? '' : 'none';
+      calc.innerHTML = `m = max(${sa.m}, ${sb.m}) = ${sab.m}，&nbsp; d = ${sa.d.toFixed(3)}·<span class="orange">e<sup>${sa.m}−${sab.m}</sup></span> + ${sb.d.toFixed(3)}·e<sup>${sb.m}−${sab.m}</sup>` +
+        ` = <b class="blue num">${sab.d.toFixed(4)}</b> &nbsp;<span class="muted">（与逐个递推的 ${states[X.length].d.toFixed(4)} 相同）</span>`;
+    },
+  };
+})();
+
+// ---------- 树形归约 ----------
+(() => {
+  const tree = document.getElementById('tree'), svg = document.getElementById('tree-svg');
+  const W = 1136, left = 150, ys = [370, 255, 140, 25];
+  const labels = ['每个元素 (x, 1)', '线程内', 'warp / block', '全局 (M, D)'];
+  const levels = [X.map(x => ({ m: x, d: 1 }))];
+  while (levels[levels.length - 1].length > 1) {
+    const prev = levels[levels.length - 1], next = [];
+    for (let i = 0; i < prev.length; i += 2) next.push(combine(prev[i], prev[i + 1]));
+    levels.push(next);
+  }
+  const xs = levels.map(l => l.map((_, i) => left + (W - left) * (i + 0.5) / l.length));
+  const nodes = levels.map((l, li) => l.map((s, i) => {
+    const n = document.createElement('div');
+    n.className = 'node';
+    n.style.left = xs[li][i] + 'px';
+    n.style.top = ys[li] + 'px';
+    n.innerHTML = `<span class="m">m=${s.m}</span><br><span class="d">d=${f3(s.d)}</span>`;
+    tree.appendChild(n);
+    return n;
+  }));
+  labels.forEach((t, li) => {
+    const l = document.createElement('div');
+    l.className = 'lvl';
+    l.style.top = ys[li] + 12 + 'px';
+    l.textContent = t;
+    tree.appendChild(l);
+  });
+  const lines = [];
+  for (let li = 1; li < levels.length; li++) {
+    levels[li].forEach((_, i) => {
+      [2 * i, 2 * i + 1].forEach(c => {
+        const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        ln.setAttribute('x1', xs[li][i]); ln.setAttribute('y1', ys[li] + 46);
+        ln.setAttribute('x2', xs[li - 1][c]); ln.setAttribute('y2', ys[li - 1]);
+        svg.appendChild(ln);
+        lines.push({ ln, li });
+      });
+    });
+  }
+  const noteEl = document.getElementById('tree-note');
+  const notes = [
+    '8 个元素各自是一个状态 (x, 1)。',
+    '相邻两两 ⊕：(2,1)⊕(1,1) = (2, 1+e<sup>−1</sup>) …… 每层并行执行。',
+    '继续合并。最大值不同的一侧乘修正因子。',
+    `log<sub>2</sub>8 = 3 层得到全局 (M, D) = (${levels[3][0].m}, ${levels[3][0].d.toFixed(4)})，与串行递推结果相同。`,
+  ];
+  ctrl['s-tree'] = {
+    steps: levels.length - 1,
+    render(k) {
+      nodes.forEach((l, li) => l.forEach(n => {
+        n.classList.toggle('on', li <= k);
+        n.classList.toggle('fresh', li === k && k > 0);
+      }));
+      lines.forEach(({ ln, li }) => { ln.classList.toggle('on', li <= k); ln.style.opacity = li <= k ? 1 : 0.15; });
+      noteEl.innerHTML = notes[k];
+    },
+  };
+})();
+
+// ---------- GPU 对比柱 ----------
+ctrl['s-gpu'] = {
+  steps: 5,
+  render(k) {
+    document.getElementById('cmp-naive').style.height = (k >= 5 ? 140 : 0) + 'px';
+    document.getElementById('cmp-online').style.height = (k >= 5 ? 84 : 0) + 'px';
+  },
+};
+
+// ---------- 代码高亮 ----------
+ctrl['s-code'] = {
+  steps: 1,
+  render(k) { document.getElementById('code-nan').classList.toggle('h', k >= 1); },
+};
+
+// ---------- 导航 ----------
+const slides = [...document.querySelectorAll('.slide')];
+let si = 0, step = 0, timer = null;
+const stepsOf = s => Math.max(
+  ...[...s.querySelectorAll('.frag')].map(f => +f.dataset.step), ctrl[s.id] ? ctrl[s.id].steps : 0, 0);
+
+function show() {
+  slides.forEach((s, i) => s.classList.toggle('active', i === si));
+  const s = slides[si];
+  s.querySelectorAll('.frag').forEach(f => f.classList.toggle('on', +f.dataset.step <= step));
+  if (ctrl[s.id]) ctrl[s.id].render(step);
+  document.getElementById('pos').textContent = `${si + 1} / ${slides.length}` + (stepsOf(s) ? ` · 步骤 ${step}/${stepsOf(s)}` : '');
+  document.getElementById('progress').style.width = ((si + 1) / slides.length * 100) + '%';
+  location.hash = si + 1;
+}
+function next() {
+  if (step < stepsOf(slides[si])) step++;
+  else if (si < slides.length - 1) { si++; step = 0; }
+  else stopPlay();
+  show();
+}
+function prev() {
+  if (step > 0) step--;
+  else if (si > 0) { si--; step = stepsOf(slides[si]); }
+  show();
+}
+function stopPlay() { clearInterval(timer); timer = null; document.getElementById('b-play').textContent = '▶ 自动'; }
+function togglePlay() {
+  if (timer) return stopPlay();
+  timer = setInterval(next, 2200);
+  document.getElementById('b-play').textContent = '⏸ 暂停';
+}
+document.addEventListener('keydown', e => {
+  if (['ArrowRight', ' ', 'PageDown', 'Enter'].includes(e.key)) { e.preventDefault(); next(); }
+  else if (['ArrowLeft', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); prev(); }
+  else if (e.key === 'p' || e.key === 'P') togglePlay();
+  else if (e.key === 'f' || e.key === 'F') {
+    document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  } else if (e.key === 'Home') { si = 0; step = 0; show(); }
+});
+document.getElementById('stage').addEventListener('click', e => { if (!e.target.closest('#nav')) next(); });
+document.getElementById('b-next').onclick = next;
+document.getElementById('b-prev').onclick = prev;
+document.getElementById('b-play').onclick = togglePlay;
+
+function fit() {
+  const s = Math.min(innerWidth / 1280, (innerHeight - 40) / 720);
+  document.getElementById('stage').style.transform = `scale(${s})`;
+}
+addEventListener('resize', fit);
+fit();
+const h = parseInt(location.hash.slice(1), 10);
+if (h >= 1 && h <= slides.length) si = h - 1;
+show();
+</script>
+</body>
+</html>

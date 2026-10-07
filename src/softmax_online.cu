@@ -78,49 +78,19 @@ __global__ void online_softmax_single_kernel(const float *__restrict__ input,
   }
 }
 
-// Each CTA computes the stable (max, sum(exp(x - max))) pair for one tile.
-template <int BLOCK_SIZE, int TILE_SIZE>
-__global__ void softmax_partial_kernel(const float *__restrict__ input,
-                                       SoftmaxPartial *__restrict__ partials,
-                                       int N) {
-  const int base = blockIdx.x * TILE_SIZE;
-  float local_max = -INFINITY;
-  for (int offset = threadIdx.x; offset < TILE_SIZE; offset += BLOCK_SIZE) {
-    const int index = base + offset;
-    if (index < N) {
-      local_max = max(local_max, input[index]);
-    }
-  }
-  const float tile_max = block_reduce<BLOCK_SIZE, Max>(local_max);
+__device__ unsigned g_done = 0;
 
-  float local_sum = 0.0f;
-  for (int offset = threadIdx.x; offset < TILE_SIZE; offset += BLOCK_SIZE) {
-    const int index = base + offset;
-    if (index < N) {
-      local_sum += __expf(input[index] - tile_max);
-    }
-  }
-  const float tile_sum = block_reduce<BLOCK_SIZE, Add>(local_sum);
-
-  if (threadIdx.x == 0) {
-    partials[blockIdx.x] = {tile_max, tile_sum};
-  }
-}
-
-// Merge tile pairs in a numerically stable way. Each lane handles a strided
-// subset of tiles before the block combines the resulting maximum and sum.
 template <int BLOCK_SIZE>
-__global__ void
-softmax_finalize_kernel(const SoftmaxPartial *__restrict__ partials,
-                        int num_tiles, float *__restrict__ stats) {
+__device__ void finalize_partials(const SoftmaxPartial *__restrict__ partials,
+                                  float *__restrict__ stats) {
   float local_max = -INFINITY;
-  for (int tile = threadIdx.x; tile < num_tiles; tile += BLOCK_SIZE) {
+  for (int tile = threadIdx.x; tile < gridDim.x; tile += BLOCK_SIZE) {
     local_max = max(local_max, partials[tile].max_value);
   }
   const float global_max = block_reduce<BLOCK_SIZE, Max>(local_max);
 
   float local_sum = 0.0f;
-  for (int tile = threadIdx.x; tile < num_tiles; tile += BLOCK_SIZE) {
+  for (int tile = threadIdx.x; tile < gridDim.x; tile += BLOCK_SIZE) {
     const SoftmaxPartial partial = partials[tile];
     local_sum += partial.exp_sum * __expf(partial.max_value - global_max);
   }
@@ -132,19 +102,67 @@ softmax_finalize_kernel(const SoftmaxPartial *__restrict__ partials,
   }
 }
 
+// Each CTA computes the stable (max, sum(exp(x - max))) pair for one tile.
+template <int BLOCK_SIZE, int TILE_SIZE>
+__global__ void softmax_partial_kernel(const float *__restrict__ input,
+                                       SoftmaxPartial *__restrict__ partials,
+                                       int N, float *__restrict__ stats) {
+  const int base = blockIdx.x * TILE_SIZE;
+  float local_max = -INFINITY;
+  float local_sum = 0.0f;
+  for (int offset = threadIdx.x; offset < TILE_SIZE; offset += BLOCK_SIZE) {
+    const int index = base + offset;
+    if (index < N) {
+      const float x = input[index];
+      const float next_max = max(local_max, x);
+      local_sum =
+          local_sum * __expf(local_max - next_max) + __expf(x - next_max);
+      local_max = next_max;
+    }
+  }
+  const float tile_max = block_reduce<BLOCK_SIZE, Max>(local_max);
+  local_sum *= __expf(local_max - tile_max);
+  const float tile_sum = block_reduce<BLOCK_SIZE, Add>(local_sum);
+
+  __shared__ bool is_last;
+
+  if (threadIdx.x == 0) {
+    partials[blockIdx.x] = {tile_max, tile_sum};
+    __threadfence(); // 保证其他 block 能看到 partial
+    is_last = atomicAdd(&g_done, 1) == gridDim.x - 1;
+  }
+
+  __syncthreads();
+
+  if (is_last) {
+    finalize_partials<BLOCK_SIZE>(partials, stats);
+
+    if (threadIdx.x == 0)
+      g_done = 0; // 为下一次调用重置计数器
+  }
+}
+
 template <int BLOCK_SIZE>
 __global__ void softmax_output_kernel(const float *__restrict__ input,
                                       float *__restrict__ output, int N,
                                       const float *__restrict__ stats) {
   const float max_value = stats[0];
   const float inverse_sum = 1.0f / stats[1];
-  const size_t stride = static_cast<size_t>(gridDim.x) * BLOCK_SIZE;
-  for (size_t index =
-           static_cast<size_t>(blockIdx.x) * BLOCK_SIZE + threadIdx.x;
-       index < static_cast<size_t>(N); index += stride) {
+  const int stride = gridDim.x * BLOCK_SIZE;
+  for (int index = blockIdx.x * BLOCK_SIZE + threadIdx.x; index < N;
+       index += stride) {
     output[index] = __expf(input[index] - max_value) * inverse_sum;
   }
 }
+
+constexpr int N_MAX = 500000;
+constexpr int TILE_SIZE = 4096;
+constexpr int BLOCK_SIZE = 256;
+constexpr int SMALL_INPUT_LIMIT = 1024;
+constexpr int MAX_OUTPUT_BLOCKS = 432;
+
+__device__ float g_stats[2];
+__device__ SoftmaxPartial g_partials[(N_MAX + TILE_SIZE - 1) / TILE_SIZE];
 
 // input and output are device pointers (i.e. pointers to memory on the GPU).
 extern "C" void solve(const float *input, float *output, int N) {
@@ -152,40 +170,24 @@ extern "C" void solve(const float *input, float *output, int N) {
     return;
   }
 
-  constexpr int BLOCK_SIZE = 256;
-  constexpr int SMALL_INPUT_LIMIT = 4096;
   if (N <= SMALL_INPUT_LIMIT) {
     online_softmax_single_kernel<BLOCK_SIZE>
         <<<1, BLOCK_SIZE>>>(input, output, N);
     return;
   }
 
-  constexpr int TILE_SIZE = 4096;
-  constexpr int MAX_OUTPUT_BLOCKS = 432;
-  const int num_tiles = (N - 1) / TILE_SIZE + 1;
-  const int needed_output_blocks = (N - 1) / BLOCK_SIZE + 1;
-  const int output_blocks = needed_output_blocks < MAX_OUTPUT_BLOCKS
-                                ? needed_output_blocks
-                                : MAX_OUTPUT_BLOCKS;
+  static float *stats = nullptr;
+  if (!stats)
+    cudaGetSymbolAddress((void **)&stats, g_stats);
 
-  SoftmaxPartial *partials = nullptr;
-  float *stats = nullptr;
-  if (cudaMalloc(&partials, static_cast<size_t>(num_tiles) *
-                                sizeof(SoftmaxPartial)) != cudaSuccess ||
-      cudaMalloc(&stats, 2 * sizeof(float)) != cudaSuccess) {
-    if (partials != nullptr) {
-      cudaFree(partials);
-    }
-    return;
-  }
+  static SoftmaxPartial *partials_ptr = nullptr;
+  if (!partials_ptr)
+    cudaGetSymbolAddress((void **)&partials_ptr, g_partials);
 
   softmax_partial_kernel<BLOCK_SIZE, TILE_SIZE>
-      <<<num_tiles, BLOCK_SIZE>>>(input, partials, N);
-  softmax_finalize_kernel<BLOCK_SIZE>
-      <<<1, BLOCK_SIZE>>>(partials, num_tiles, stats);
+      <<<(N + TILE_SIZE - 1) / TILE_SIZE, BLOCK_SIZE>>>(input, partials_ptr, N,
+                                                        stats);
   softmax_output_kernel<BLOCK_SIZE>
-      <<<output_blocks, BLOCK_SIZE>>>(input, output, N, stats);
-
-  cudaFree(stats);
-  cudaFree(partials);
+      <<<(N + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(input, output, N,
+                                                          stats);
 }

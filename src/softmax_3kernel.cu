@@ -170,8 +170,8 @@ extern "C" void solve(const float *input, float *output, int N) {
   if (!stats) {
     cudaGetSymbolAddress((void **)&stats, g_stats);
   }
-
   init_kernel<<<1, 1>>>(stats);
+
   max_kernel<BLOCK_SIZE><<<max_blocks, BLOCK_SIZE>>>(input, &stats[0], N);
   exp_sum_kernel<BLOCK_SIZE>
       <<<max_blocks, BLOCK_SIZE>>>(input, &stats[0], output, &stats[1], N);
