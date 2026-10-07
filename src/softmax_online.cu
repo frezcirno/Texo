@@ -83,19 +83,21 @@ __device__ unsigned g_done = 0;
 template <int BLOCK_SIZE>
 __device__ void finalize_partials(const SoftmaxPartial *__restrict__ partials,
                                   float *__restrict__ stats) {
-  float local_max = -INFINITY;
-  for (int tile = threadIdx.x; tile < gridDim.x; tile += BLOCK_SIZE) {
-    local_max = max(local_max, partials[tile].max_value);
+  if (threadIdx.x >= 32) {
+    return;
   }
-  const float global_max = block_reduce<BLOCK_SIZE, Max>(local_max);
-
-  float local_sum = 0.0f;
-  for (int tile = threadIdx.x; tile < gridDim.x; tile += BLOCK_SIZE) {
-    const SoftmaxPartial partial = partials[tile];
-    local_sum += partial.exp_sum * __expf(partial.max_value - global_max);
+  float m = -INFINITY;
+  float d = 0.0f;
+  for (int tile = threadIdx.x; tile < gridDim.x; tile += 32) {
+    const SoftmaxPartial p = partials[tile];
+    const float next_max = max(m, p.max_value);
+    d = d * __expf(m - next_max) + p.exp_sum * __expf(p.max_value - next_max);
+    m = next_max;
   }
-  const float global_sum = block_reduce<BLOCK_SIZE, Add>(local_sum);
-
+  // warp_reduce 用的是 shfl_down，结果只在 lane 0，需要广播给所有 lane
+  const float global_max = __shfl_sync(0xffffffff, warp_reduce<Max>(m), 0);
+  d *= __expf(m - global_max); // 没分到 partial 的 lane：0 * e^-inf = 0
+  const float global_sum = warp_reduce<Add>(d);
   if (threadIdx.x == 0) {
     stats[0] = global_max;
     stats[1] = global_sum;
@@ -148,10 +150,26 @@ __global__ void softmax_output_kernel(const float *__restrict__ input,
                                       const float *__restrict__ stats) {
   const float max_value = stats[0];
   const float inverse_sum = 1.0f / stats[1];
+  const int tid = blockIdx.x * BLOCK_SIZE + threadIdx.x;
   const int stride = gridDim.x * BLOCK_SIZE;
-  for (int index = blockIdx.x * BLOCK_SIZE + threadIdx.x; index < N;
-       index += stride) {
-    output[index] = __expf(input[index] - max_value) * inverse_sum;
+
+  const float4 *input4 = reinterpret_cast<const float4 *>(input);
+  float4 *output4 = reinterpret_cast<float4 *>(output);
+  const int N4 = N / 4;
+
+  for (int index = tid; index < N4; index += stride) {
+    float4 v = __ldcs(input4 + index);
+    v.x = __expf(v.x - max_value) * inverse_sum;
+    v.y = __expf(v.y - max_value) * inverse_sum;
+    v.z = __expf(v.z - max_value) * inverse_sum;
+    v.w = __expf(v.w - max_value) * inverse_sum;
+    __stcs(output4 + index, v);
+  }
+
+  const int tail = N4 * 4 + tid;
+  if (tail < N) {
+    __stcs(output + tail,
+           __expf(__ldcs(input + tail) - max_value) * inverse_sum);
   }
 }
 
@@ -159,7 +177,6 @@ constexpr int N_MAX = 500000;
 constexpr int TILE_SIZE = 4096;
 constexpr int BLOCK_SIZE = 256;
 constexpr int SMALL_INPUT_LIMIT = 1024;
-constexpr int MAX_OUTPUT_BLOCKS = 432;
 
 __device__ float g_stats[2];
 __device__ SoftmaxPartial g_partials[(N_MAX + TILE_SIZE - 1) / TILE_SIZE];
@@ -188,6 +205,6 @@ extern "C" void solve(const float *input, float *output, int N) {
       <<<(N + TILE_SIZE - 1) / TILE_SIZE, BLOCK_SIZE>>>(input, partials_ptr, N,
                                                         stats);
   softmax_output_kernel<BLOCK_SIZE>
-      <<<(N + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(input, output, N,
-                                                          stats);
+      <<<(N / 4 + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(input, output, N,
+                                                              stats);
 }
