@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>并行 Scan：Scan-then-Propagate vs Reduce-then-Scan</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171e2e;
+    --line: #2a3550;
+    --text: #e6e9f0;
+    --muted: #8a94ab;
+    --blue: #5b9dff;
+    --green: #3ccf91;
+    --orange: #ffa94d;
+    --red: #ff6b6b;
+    --purple: #b48cff;
+    /* 图表分类色：dark 档，已在 #0f1420 / #171e2e 上通过 validate_palette（all-pairs） */
+    --series-1: #3987e5; /* Scan-then-Propagate */
+    --series-2: #d95926; /* Reduce-then-Scan */
+    --series-3: #199e70; /* cub::DeviceScan */
+    --read: #4b5a7c;
+    --write: #c07a3a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #070a10; color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; overflow: hidden; }
+  #viewport { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #stage { width: 1280px; height: 720px; position: relative; background: var(--bg);
+    border-radius: 12px; overflow: hidden; transform-origin: center center; box-shadow: 0 0 60px #000; }
+  .slide { position: absolute; inset: 0; padding: 52px 72px; opacity: 0; pointer-events: none;
+    transition: opacity .45s ease; }
+  .slide.active { opacity: 1; pointer-events: auto; }
+  h1 { font-size: 52px; font-weight: 700; letter-spacing: 1px; line-height: 1.3; }
+  h2 { font-size: 34px; font-weight: 650; margin-bottom: 24px; }
+  h2 small { font-size: 18px; color: var(--muted); font-weight: 400; margin-left: 12px; }
+  h4 { font-size: 22px; margin-bottom: 8px; }
+  p, li { font-size: 21px; line-height: 1.7; }
+  ul { padding-left: 28px; }
+  .muted { color: var(--muted); }
+  .blue { color: var(--blue); } .green { color: var(--green); } .orange { color: var(--orange); }
+  .red { color: var(--red); } .purple { color: var(--purple); }
+  code, pre { font-family: "JetBrains Mono", "Fira Code", Consolas, monospace; }
+  code { font-size: .9em; background: #212a3f; padding: 1px 6px; border-radius: 4px; }
+  .formula { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 26px; display: inline-block; font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif;
+    font-size: 28px; }
+  sub, sup { font-size: 62%; }
+  .frag { opacity: 0; transform: translateY(12px); transition: opacity .45s, transform .45s; }
+  .frag.on { opacity: 1; transform: none; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 22px; }
+  .row { display: flex; gap: 24px; align-items: flex-start; }
+  .note { font-size: 19px; padding: 10px 16px; border-radius: 8px; margin-top: 12px; line-height: 1.6; }
+  .note.warn { background: rgba(255,169,77,.12); border: 1px solid rgba(255,169,77,.5); color: #ffd3a1; }
+  .note.ok { background: rgba(60,207,145,.12); border: 1px solid rgba(60,207,145,.5); color: #a9f0cf; }
+  .nw { white-space: nowrap; }
+  #s-sum li { margin-bottom: 14px; font-size: 22px; }
+  .key { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 8px; vertical-align: 1px; }
+
+  /* title */
+  #s-title { display: flex; flex-direction: column; justify-content: center; }
+  #s-title .sub { font-size: 24px; color: var(--muted); margin-top: 20px; line-height: 1.6; }
+  #s-title .hint { position: absolute; bottom: 48px; font-size: 18px; color: var(--muted); }
+  #s-title .algos { display: flex; gap: 20px; margin-top: 36px; }
+  #s-title .algos .card { width: 360px; }
+  #s-title .algos p { font-size: 18px; }
+
+  /* 数组演示 */
+  .grid { display: grid; grid-template-columns: 220px auto 1fr; row-gap: 10px; column-gap: 16px; align-items: center; }
+  .grid .label { font-size: 16px; line-height: 1.35; text-align: right; color: var(--text); transition: opacity .4s; }
+  .grid .label small { display: block; color: var(--muted); font-size: 14px; }
+  .grid .tag { font-size: 13px; line-height: 1.35; color: var(--muted); transition: opacity .4s; }
+  .cells { display: flex; }
+  .cell { width: 42px; height: 40px; margin-right: 4px; border-radius: 7px; background: #212a3f; border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center; font-size: 19px; font-family: Consolas, monospace;
+    transition: background .35s, border-color .35s, opacity .35s, transform .35s; }
+  .cell.gap { margin-right: 18px; }
+  .cells .cell:last-child { margin-right: 0; }
+  .cell.empty { background: transparent; border-color: transparent; }
+  .cell.hidden { opacity: 0; transform: translateY(8px); }
+  .cell.done { background: #1d3350; border-color: var(--blue); }
+  .cell.sum { background: #2c2440; border-color: var(--purple); }
+  .cell.carry { background: #203a33; border-color: var(--green); }
+  .cell.fixed { background: #3a2a1a; border-color: var(--orange); }
+  .cell.final { background: #1d3a2c; border-color: var(--green); }
+  .blockhdr { display: flex; }
+  .blockhdr div { width: 180px; margin-right: 18px; text-align: center; font-size: 14px; color: var(--muted);
+    border-bottom: 2px solid var(--line); padding-bottom: 4px; }
+  .dim { opacity: .25; }
+
+  /* 显存流量条 */
+  .meter { margin-top: 18px; display: flex; align-items: center; gap: 16px; }
+  .meter .name { width: 220px; text-align: right; font-size: 17px; }
+  .meter .track { width: 560px; height: 34px; background: #151b29; border: 1px solid var(--line); border-radius: 8px;
+    display: flex; gap: 2px; padding: 3px; }
+  .meter .seg { height: 100%; border-radius: 5px; width: 0; transition: width .45s; display: flex; align-items: center;
+    justify-content: center; font-size: 14px; color: #fff; overflow: hidden; white-space: nowrap; }
+  .meter .seg.r { background: var(--read); }
+  .meter .seg.w { background: var(--write); }
+  .meter .total { font-size: 22px; font-weight: 650; min-width: 60px; }
+  .meter .legend { font-size: 14px; color: var(--muted); }
+
+  /* 对比表 */
+  table.cmp { border-collapse: collapse; width: 100%; font-size: 19px; }
+  table.cmp th, table.cmp td { border-bottom: 1px solid var(--line); padding: 11px 14px; text-align: left; vertical-align: top; line-height: 1.5; }
+  table.cmp th { color: var(--muted); font-weight: 500; font-size: 16px; }
+  table.cmp td:first-child { color: var(--muted); width: 170px; }
+  table.cmp tr.hl td { background: rgba(91,157,255,.07); }
+
+  /* pipeline */
+  .pipe { display: flex; align-items: stretch; gap: 14px; margin-top: 8px; }
+  .stagebox { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .stagebox p { font-size: 17px; line-height: 1.6; }
+  .arrow { align-self: center; font-size: 28px; color: var(--muted); }
+  pre.code { background: #0b101a; border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px;
+    font-size: 15px; line-height: 1.55; color: #c9d1e3; margin-top: 18px; }
+  pre.code .c { color: #6b7894; }
+  pre.code .k { color: #b48cff; }
+
+  /* 图表 */
+  .charts { display: flex; gap: 28px; }
+  .chartbox { flex: 1 1 0; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 18px 12px; position: relative; }
+  .chartbox h4 { font-size: 19px; font-weight: 600; margin-bottom: 2px; }
+  .chartbox .subt { font-size: 14px; color: var(--muted); margin-bottom: 8px; }
+  .chartbox .lgd { display: flex; gap: 16px; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
+  .chartbox svg text { font-family: inherit; }
+  .chartbox .tbtn { position: absolute; top: 14px; right: 16px; background: #1b2336; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 6px; font-size: 13px; padding: 3px 10px; cursor: pointer; }
+  .chartbox .tbtn:hover { border-color: var(--blue); color: var(--text); }
+  .chartbox table.data { display: none; border-collapse: collapse; width: 100%; font-size: 15px; margin-top: 6px; }
+  .chartbox.tbl table.data { display: table; }
+  .chartbox.tbl svg, .chartbox.tbl .lgd { display: none; }
+  .chartbox table.data th, .chartbox table.data td { border-bottom: 1px solid var(--line); padding: 7px 8px; text-align: right; }
+  .chartbox table.data th:first-child, .chartbox table.data td:first-child { text-align: left; }
+  .chartbox table.data th { color: var(--muted); font-weight: 500; }
+  .hit { fill: transparent; cursor: default; }
+  #tip { position: absolute; pointer-events: none; background: #0b101a; border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 12px; font-size: 14px; line-height: 1.55; color: var(--text);
+    opacity: 0; transition: opacity .12s; z-index: 5; white-space: nowrap; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+  #tip .m { color: var(--muted); }
+
+  #nav { position: fixed; bottom: 14px; right: 18px; display: flex; gap: 8px; align-items: center; z-index: 10;
+    font-size: 14px; color: var(--muted); }
+  #nav button { background: #1b2336; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    padding: 4px 12px; font-size: 14px; cursor: pointer; }
+  #nav button:hover { border-color: var(--blue); }
+  #progress { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--blue); transition: width .4s; }
+</style>
+</head>
+<body>
+<div id="viewport">
+<div id="stage">
+
+  <section class="slide" id="s-title">
+    <h1>并行 Scan 的两种跨 block 策略</h1>
+    <div class="sub">Scan-then-Propagate 与 Reduce-then-Scan 的区别<br>以 <code>src/scan_scan_then_propagate.cu</code> 和 <code>src/scan_reduce_then_scan.cu</code> 为例 · A800 实测</div>
+    <div class="algos">
+      <div class="card"><h4><span class="key" style="background:var(--series-1)"></span>Scan-then-Propagate</h4>
+        <p class="muted">先扫描、写出局部结果，<br>再回头给每个 block 补上偏移</p></div>
+      <div class="card"><h4><span class="key" style="background:var(--series-2)"></span>Reduce-then-Scan</h4>
+        <p class="muted">先只求各段总和，<br>再带着前缀一次扫描写出</p></div>
+    </div>
+    <div class="hint">← → / 空格 翻页 · P 自动播放 · F 全屏</div>
+  </section>
+
+  <section class="slide" id="s-problem">
+    <h2>问题：前缀和为什么难跨 block 并行</h2>
+    <div class="formula">y<sub>i</sub> = x<sub>0</sub> ⊕ x<sub>1</sub> ⊕ … ⊕ x<sub>i</sub></div>
+    <p class="muted" style="margin-top:10px">⊕ 是满足结合律的运算：加、乘、max、min……下面以加法为例</p>
+    <div style="margin-top:26px">
+      <div class="blockhdr" style="margin-left:0"><div>block 0</div><div>block 1</div><div>block 2</div><div>block 3</div></div>
+      <div class="cells" id="prob-cells" style="margin-top:8px"></div>
+    </div>
+    <div class="frag" data-step="1">
+      <div class="note ok">block 内部：warp shuffle + shared memory，几次同步就能扫完一个 tile，<b>互相不用通信</b>。</div>
+    </div>
+    <div class="frag" data-step="2">
+      <div class="note warn">跨 block：block 2 的每个结果都要加上 <b>block 0 + block 1 的总和</b>，但 block 之间没有同步手段。<br>
+      两种算法的分歧就在于：<b>这个"前面所有 block 的总和"怎么得到、什么时候加上去</b>。</div>
+    </div>
+  </section>
+
+  <section class="slide" id="s-stp">
+    <h2><span class="key" style="background:var(--series-1);width:16px;height:16px"></span>Scan-then-Propagate <small>scan_scan_then_propagate.cu：先扫描，再传播偏移</small></h2>
+    <div class="grid" id="stp-grid"></div>
+    <div class="meter">
+      <div class="name">显存流量</div>
+      <div class="track" id="stp-meter"></div>
+      <div class="total" id="stp-total">0</div>
+      <div class="legend"><span class="key" style="background:var(--read)"></span>读 <span class="key" style="background:var(--write);margin-left:10px"></span>写</div>
+    </div>
+    <div id="stp-note"></div>
+  </section>
+
+  <section class="slide" id="s-rts">
+    <h2><span class="key" style="background:var(--series-2);width:16px;height:16px"></span>Reduce-then-Scan <small>scan_reduce_then_scan.cu：先求和，再一次扫描</small></h2>
+    <div class="grid" id="rts-grid"></div>
+    <div class="meter">
+      <div class="name">显存流量</div>
+      <div class="track" id="rts-meter"></div>
+      <div class="total" id="rts-total">0</div>
+      <div class="legend"><span class="key" style="background:var(--read)"></span>读 <span class="key" style="background:var(--write);margin-left:10px"></span>写</div>
+    </div>
+    <div id="rts-note"></div>
+  </section>
+
+  <section class="slide" id="s-diff">
+    <h2>关键差别：第一遍要不要写 output</h2>
+    <div class="row">
+      <div class="card" style="flex:1">
+        <h4><span class="key" style="background:var(--series-1)"></span>Scan-then-Propagate</h4>
+        <p>① 读 input，<b>写</b>局部结果 <span class="muted">读 N + 写 N</span></p>
+        <p>② 扫描 block 总和 <span class="muted">很小，递归</span></p>
+        <p>③ <b>读回</b> output，加偏移再<b>写</b> <span class="muted">读 N + 写 N</span></p>
+        <p style="margin-top:8px;font-size:26px;font-weight:650">共 4N</p>
+      </div>
+      <div class="card" style="flex:1">
+        <h4><span class="key" style="background:var(--series-2)"></span>Reduce-then-Scan</h4>
+        <p>① 读 input，只算各段总和 <span class="muted">读 N</span></p>
+        <p>② 每段求前面各段之和 <span class="muted">很小，读 L2</span></p>
+        <p>③ <b>再读</b> input，带 carry 扫描后<b>写</b> <span class="muted">读 N + 写 N</span></p>
+        <p style="margin-top:8px;font-size:26px;font-weight:650">共 3N</p>
+      </div>
+    </div>
+    <div class="frag" data-step="1">
+      <div class="note ok">两者都要把数据过两遍。区别在于：<span class="nw">Scan-then-Propagate</span> 第一遍就把<b>还不完整的结果</b>写进显存，第二遍再读回来改；
+      <span class="nw">Reduce-then-Scan</span> 第一遍只留下每段一个数，第二遍重新读 <b>input</b>，算出的就是最终结果。<br>
+      省下的正好是"中间结果写出去再读回来"的一个 N。</div>
+    </div>
+    <div class="frag" data-step="2">
+      <div class="note warn">代价：第一遍的求和是按线程交错累加的，元素的合并顺序被打乱，所以 ⊕ 还要满足<b>交换律</b>。
+      加、乘、max、min 都满足；浮点加法的结果会和顺序扫描有舍入级别的差异。</div>
+    </div>
+  </section>
+
+  <section class="slide" id="s-table">
+    <h2>启动次数、临时内存与 grid 形状</h2>
+    <table class="cmp">
+      <tr><th></th><th><span class="key" style="background:var(--series-1)"></span>Scan-then-Propagate</th><th><span class="key" style="background:var(--series-2)"></span>Reduce-then-Scan</th></tr>
+      <tr class="hl"><td>显存流量</td><td>4N（读 2N、写 2N）</td><td>3N（读 2N、写 N）</td></tr>
+      <tr><td>grid 大小</td><td>随 N 增长：每个 block 一个 tile，<br>N = 1e8 时约 4.9 万个 block</td><td>固定 ≈ 同时驻留的 block 数（A800 上为 540），<br>每个 block 串行推进若干 tile</td></tr>
+      <tr><td>块总和的处理</td><td>块总和数组本身可能很长 → <b>递归调用 scan</b></td><td>段数 ≤ 驻留 block 数，<b>每个 block 自己求和</b>即可</td></tr>
+      <tr class="hl"><td>kernel 启动</td><td>每层 2 次 + 递归：<br>N = 1e5 时 3 次，N = 1e8 时 5 次</td><td>2 次；N ≤ 4 个 tile 时只启动 1 次</td></tr>
+      <tr><td>临时内存</td><td>每层 <code>cudaMallocAsync</code> / <code>cudaFreeAsync</code></td><td>静态 <code>__device__</code> 数组（256KB）</td></tr>
+      <tr><td>对 ⊕ 的要求</td><td>结合律</td><td>结合律 + 交换律</td></tr>
+      <tr><td>使用限制</td><td>—</td><td>静态数组全局共享：不能多 stream / 多线程并发调用</td></tr>
+    </table>
+  </section>
+
+  <section class="slide" id="s-tile">
+    <h2>两者共用的底座：tile 扫描 <small>256 线程 × 每线程 8 个元素 = 2048</small></h2>
+    <div class="pipe">
+      <div class="stagebox frag" data-step="1">
+        <h4 class="blue">① 合并读入</h4>
+        <p>第 k 轮读 <code>k·256 + tid</code>，<br>相邻线程读相邻地址，<br>写进 shared memory</p>
+      </div>
+      <div class="arrow frag" data-step="2">→</div>
+      <div class="stagebox frag" data-step="2">
+        <h4 class="purple">② 转置</h4>
+        <p>每个线程取连续 8 个：<br><code>tid·8 + k</code><br>每 32 个元素插 1 个空位，<br>避开 bank conflict</p>
+      </div>
+      <div class="arrow frag" data-step="3">→</div>
+      <div class="stagebox frag" data-step="3">
+        <h4 class="green">③ 线程内串行</h4>
+        <p>寄存器里做 7 次 ⊕，<br>得到 8 个局部前缀<br>和这个线程的总和</p>
+      </div>
+      <div class="arrow frag" data-step="4">→</div>
+      <div class="stagebox frag" data-step="4">
+        <h4 class="orange">④ block_scan</h4>
+        <p>只对 256 个线程总和做<br>warp shuffle 扫描，<br>结果加回各自的 8 个元素</p>
+      </div>
+    </div>
+    <div class="frag" data-step="5">
+<pre class="code"><span class="c">// Reduce-then-Scan 的 scan_segments：同一个 tile 扫描，外面多了一个 carry</span>
+T carry = <span class="c">/* 前面各段总和之和 */</span>;
+<span class="k">for</span> (size_t base = begin; base &lt; end; base += TILE) {
+  carry = Op&lt;T&gt;::apply(carry, scan_tile&lt;Exclusive, Op&gt;(input + base, output + base, valid, carry, tile));
+}</pre>
+      <div class="note ok" style="margin-top:12px">所以下一页的性能对比只反映<b>跨 block 策略</b>的差别：两边的 tile 扫描代码完全相同。</div>
+    </div>
+  </section>
+
+  <section class="slide" id="s-perf">
+    <h2>实测 <small>A800 80GB PCIe，float inclusive sum，单位 µs，越短越好；悬停看详情</small></h2>
+    <div class="charts">
+      <div class="chartbox" id="cb-big">
+        <button class="tbtn">表格</button>
+        <h4>大 N：N = 1 亿</h4>
+        <div class="subt">受显存带宽限制，耗时 ∝ 读写量</div>
+        <svg id="chart-big" width="516" height="300"></svg>
+        <table class="data" id="tbl-big"></table>
+      </div>
+      <div class="chartbox" id="cb-small">
+        <button class="tbtn">表格</button>
+        <h4>小 N：启动开销为主</h4>
+        <div class="subt">N = 1 万 ~ 100 万</div>
+        <div class="lgd" id="lgd-small"></div>
+        <svg id="chart-small" width="516" height="276"></svg>
+        <table class="data" id="tbl-small"></table>
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px;gap:28px">
+      <div class="note ok" style="flex:1;margin-top:0">N = 1 亿：两者有效带宽都约 1.5 TB/s，<br>1054 / 803 ≈ 1.31，接近 4N / 3N = 1.33。</div>
+      <div class="note ok" style="flex:1;margin-top:0">小 N：从 3 次启动降到 2 次（或 1 次），<br>N = 1 万时 17.7 → 7.9 µs。</div>
+    </div>
+  </section>
+
+  <section class="slide" id="s-sum">
+    <h2>总结</h2>
+    <ul>
+      <li class="frag" data-step="1">两种算法的共同点：block 内都只扫描一个 tile，跨 block 都要靠"前面所有 block 的总和"。</li>
+      <li class="frag" data-step="2"><b>Scan-then-Propagate</b> 先写出不完整的结果再回头修正：实现简单，只需结合律，但读写 4N，还要递归和多次启动。</li>
+      <li class="frag" data-step="3"><b>Reduce-then-Scan</b> 第一遍只求总和，第二遍重新读 input 直接写最终结果：读写 3N，固定 grid、不递归、无动态分配；代价是要求交换律、静态缓冲区不能并发。</li>
+      <li class="frag" data-step="4">实测：大 N 快约 1.3 倍（≈ 4N / 3N），小 N 快 2 倍左右。</li>
+      <li class="frag" data-step="5"><span class="muted">下一步：</span>单遍 <b>decoupled look-back</b>（cub 的做法）只读写 2N，正好是剩下的 803 / 543 ≈ 1.48 倍差距。</li>
+    </ul>
+  </section>
+
+  <div id="tip"></div>
+  <div id="progress"></div>
+</div>
+</div>
+<div id="nav">
+  <span id="pos"></span>
+  <button id="b-prev">←</button>
+  <button id="b-play">▶ 自动</button>
+  <button id="b-next">→</button>
+</div>
+
+<script>
+// ---------- 演示数据：16 个元素，4 个 block，每个 4 个 ----------
+const X = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3];
+const NB = 4, BS = 4;
+const local = [], blockSum = [];
+for (let b = 0; b < NB; b++) {
+  let acc = 0;
+  for (let j = 0; j < BS; j++) { acc += X[b * BS + j]; local.push(acc); }
+  blockSum.push(acc);
+}
+const blockIncl = blockSum.map((_, b) => blockSum.slice(0, b + 1).reduce((a, v) => a + v, 0));
+const carry = blockSum.map((_, b) => blockSum.slice(0, b).reduce((a, v) => a + v, 0));
+const finalY = X.map((_, i) => X.slice(0, i + 1).reduce((a, v) => a + v, 0));
+
+function cellsHTML(values, cls) {
+  return values.map((v, i) => {
+    const gap = (i % BS === BS - 1 && i !== X.length - 1) ? ' gap' : '';
+    if (v === null) return `<div class="cell${gap} empty"></div>`;
+    const c = typeof cls === 'function' ? cls(i) : cls;
+    return `<div class="cell${gap} ${c || ''}">${v}</div>`;
+  }).join('');
+}
+// 只在每个 block 的某个位置显示一个值
+const sparse = (vals, pos) => X.map((_, i) => (i % BS === pos ? vals[Math.floor(i / BS)] : null));
+
+document.getElementById('prob-cells').innerHTML = cellsHTML(X, '');
+const ctrl = {};
+ctrl['s-problem'] = {
+  steps: 2,
+  render(k) {
+    const cells = [...document.getElementById('prob-cells').children];
+    cells.forEach((c, i) => {
+      const b = Math.floor(i / BS);
+      c.classList.toggle('done', k >= 1 && k < 2);
+      c.classList.toggle('sum', k >= 2 && b < 2);
+      c.classList.toggle('fixed', k >= 2 && b === 2);
+      c.classList.toggle('dim', k >= 2 && b === 3);
+    });
+  },
+};
+
+// 通用：一组行，每步显示若干行并更新流量条
+function buildDemo(prefix, rows, meterSegs, steps) {
+  const grid = document.getElementById(prefix + '-grid');
+  grid.innerHTML = rows.map((r, i) =>
+    `<div class="label" data-row="${i}">${r.label}${r.sub ? `<small>${r.sub}</small>` : ''}</div>` +
+    `<div class="cells" data-row="${i}">${cellsHTML(r.values, r.cls)}</div>` +
+    `<div class="tag" data-row="${i}">${r.tag || ''}</div>`).join('');
+  const meter = document.getElementById(prefix + '-meter');
+  meter.innerHTML = meterSegs.map(s => `<div class="seg ${s.t}">${s.text}</div>`).join('');
+  const segEls = [...meter.children];
+  const total = document.getElementById(prefix + '-total');
+  const note = document.getElementById(prefix + '-note');
+  ctrl['s-' + prefix] = {
+    steps: steps.length - 1,
+    render(k) {
+      const st = steps[k];
+      rows.forEach((r, i) => {
+        const on = r.step <= k;
+        grid.querySelectorAll(`[data-row="${i}"]`).forEach(el => {
+          if (el.classList.contains('cells')) {
+            [...el.children].forEach(c => c.classList.toggle('hidden', !on));
+          } else {
+            el.style.opacity = on ? 1 : 0;
+          }
+        });
+        // 当前步新出现的行之外，旧行稍微变暗
+        grid.querySelectorAll(`[data-row="${i}"].cells`).forEach(el =>
+          el.classList.toggle('dim', !!(on && r.step < k && r.fade)));
+      });
+      segEls.forEach((s, i) => { s.style.width = i < st.segs ? (meterSegs[i].w + 'px') : '0'; });
+      total.textContent = st.total;
+      note.innerHTML = st.note || '';
+    },
+  };
+}
+
+const UNIT = 136; // 一个 N 在流量条上的宽度
+
+buildDemo('stp', [
+  { label: 'input', values: X, step: 0 },
+  { label: '① 每个 block 内 scan', sub: '结果直接写进 output', values: local, cls: 'done', step: 1, fade: true,
+    tag: 'kernel 1' },
+  { label: '　 block 总和', sub: '每个 block 最后一个线程写出', values: sparse(blockSum, BS - 1), cls: 'sum', step: 1,
+    tag: '' },
+  { label: '② 扫描 block 总和', sub: '数组可能很长 → 递归调用 scan', values: sparse(blockIncl, BS - 1), cls: 'sum', step: 2,
+    tag: 'kernel 2…<br>（递归）' },
+  { label: '③ 读回 output，加偏移', sub: '偏移 = 前一个 block 的扫描值', values: finalY,
+    cls: i => (i < BS ? 'final' : 'fixed'), step: 3, tag: 'kernel 3' },
+], [
+  { t: 'r', text: '读 input N', w: UNIT }, { t: 'w', text: '写 output N', w: UNIT },
+  { t: 'r', text: '读 output N', w: UNIT }, { t: 'w', text: '写 output N', w: UNIT },
+], [
+  { segs: 0, total: '0' },
+  { segs: 2, total: '2N', note: '<div class="note warn">第一遍就把<b>不完整</b>的结果写进了 output：block 1~3 还缺前面各 block 的总和。</div>' },
+  { segs: 2, total: '2N', note: '<div class="note warn">block 总和只有 N / 2048 个，但 N 很大时它自己也超过一个 tile，只能再递归扫描，每层多 2 次启动。</div>' },
+  { segs: 4, total: '4N', note: '<div class="note warn">橙色的 12 个元素被<b>读回来、改完再写一遍</b>：output 在显存里往返了两次。</div>' },
+]);
+
+buildDemo('rts', [
+  { label: 'input', values: X, step: 0 },
+  { label: '① 每段只求总和', sub: '不写 output', values: sparse(blockSum, BS - 1), cls: 'sum', step: 1,
+    tag: 'kernel 1' },
+  { label: '② carry = 前面各段之和', sub: '在 kernel 2 开头完成，读 L2', values: sparse(carry, 0), cls: 'carry', step: 2,
+    tag: 'kernel 2 开头' },
+  { label: '③ 再读 input，带 carry 扫描', sub: '写出的就是最终结果', values: finalY, cls: 'final', step: 3,
+    tag: 'kernel 2' },
+], [
+  { t: 'r', text: '读 input N', w: UNIT },
+  { t: 'r', text: '读 input N', w: UNIT }, { t: 'w', text: '写 output N', w: UNIT },
+], [
+  { segs: 0, total: '0' },
+  { segs: 1, total: '1N', note: '<div class="note ok">第一遍只读不写，每段只留下 1 个数。演示里 1 段 = 4 个元素；实际 1 段是连续若干个 2048 元素的 tile，段数 ≈ 能同时驻留的 block 数。</div>' },
+  { segs: 1, total: '1N', note: '<div class="note ok">段数不超过驻留 block 数（几百个），每个 block 自己把前面的段总和加起来即可：<b>不用递归，也不用单独的 kernel</b>。</div>' },
+  { segs: 3, total: '3N', note: '<div class="note ok">每个 output 元素只写一次。和左边相比，少了"写出中间结果再读回"的那个 N。</div>' },
+]);
+
+// ---------- 图表 ----------
+const ALG = [
+  { id: 'stp', name: 'Scan-then-Propagate', color: 'var(--series-1)', traffic: 4 },
+  { id: 'rts', name: 'Reduce-then-Scan', color: 'var(--series-2)', traffic: 3 },
+  { id: 'cub', name: 'cub::DeviceScan', color: 'var(--series-3)', traffic: 2 },
+];
+// A800 GPU 5 空闲时实测（/tmp/scan_explore/bench6，取第一轮）
+const SMALL_N = [10000, 100000, 1000000];
+const SMALL = { stp: [17.7, 18.3, 21.3], rts: [7.9, 8.4, 12.1], cub: [6.8, 8.0, 11.9] };
+const BIG = { stp: 1054, rts: 803, cub: 543 };
+const BIG_N = 1e8;
+const fmtN = n => ({ 10000: '1 万', 100000: '10 万', 1000000: '100 万', 100000000: '1 亿' }[n]);
+const SVGNS = 'http://www.w3.org/2000/svg';
+const CW = 516; // 图表 SVG 宽度
+const GRID = '#2a3550', MUTED = '#8a94ab', TEXT = '#e6e9f0';
+
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+// 一端 4px 圆角、基线端方角
+function hbarPath(x0, y, len, h) {
+  const r = Math.min(4, len, h / 2), x1 = x0 + len;
+  return `M${x0},${y} H${x1 - r} Q${x1},${y} ${x1},${y + r} V${y + h - r} Q${x1},${y + h} ${x1 - r},${y + h} H${x0} Z`;
+}
+function vbarPath(x, y0, len, w) {
+  const r = Math.min(4, len, w / 2), y1 = y0 - len;
+  return `M${x},${y0} V${y1 + r} Q${x},${y1} ${x + r},${y1} H${x + w - r} Q${x + w},${y1} ${x + w},${y1 + r} V${y0} Z`;
+}
+
+const tip = document.getElementById('tip');
+const stage = document.getElementById('stage');
+function showTip(e, html) {
+  const r = stage.getBoundingClientRect(), s = r.width / 1280;
+  tip.innerHTML = html;
+  tip.style.opacity = 1;
+  let x = (e.clientX - r.left) / s + 14, y = (e.clientY - r.top) / s + 14;
+  if (x + tip.offsetWidth > 1270) x -= tip.offsetWidth + 28;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+const hideTip = () => { tip.style.opacity = 0; };
+const bw = (n, us, traffic) => (n * 4 * traffic / (us * 1e-6) / 1e12).toFixed(2);
+
+// 大 N：横向条形
+(() => {
+  const svg = document.getElementById('chart-big');
+  const L = 176, R = 84, T = 8, W = CW - L - R, band = 78, bar = 24, max = 1200;
+  const x = v => L + v / max * W;
+  for (let t = 0; t <= max; t += 300) {
+    el('line', { x1: x(t), x2: x(t), y1: T, y2: T + band * 3, stroke: GRID, 'stroke-width': 1 }, svg);
+    el('text', { x: x(t), y: T + band * 3 + 20, fill: MUTED, 'font-size': 13, 'text-anchor': 'middle' }, svg, t.toLocaleString());
+  }
+  el('text', { x: L + W, y: T + band * 3 + 40, fill: MUTED, 'font-size': 13, 'text-anchor': 'end' }, svg, 'µs');
+  ALG.forEach((a, i) => {
+    const v = BIG[a.id], yc = T + band * i + band / 2, y = yc - bar / 2;
+    el('circle', { cx: 10, cy: yc - 9, r: 5, fill: a.color }, svg);
+    el('text', { x: 22, y: yc - 4, fill: TEXT, 'font-size': 15 }, svg, a.name);
+    el('text', { x: 22, y: yc + 16, fill: MUTED, 'font-size': 13 }, svg, `读写 ${a.traffic}N`);
+    el('path', { d: hbarPath(L, y, x(v) - L, bar), fill: a.color }, svg);
+    el('text', { x: x(v) + 8, y: yc + 5, fill: TEXT, 'font-size': 15, 'font-weight': 600 }, svg, `${v} µs`);
+    const hit = el('rect', { x: 0, y: T + band * i, width: CW, height: band, class: 'hit' }, svg);
+    hit.addEventListener('mousemove', e => showTip(e,
+      `<b>${a.name}</b><br><span class="m">N =</span> ${fmtN(BIG_N)}<br><span class="m">耗时</span> ${v} µs` +
+      `<br><span class="m">读写量</span> ${a.traffic}N = ${(BIG_N * 4 * a.traffic / 1e9).toFixed(1)} GB` +
+      `<br><span class="m">有效带宽</span> ${bw(BIG_N, v, a.traffic)} TB/s`));
+    hit.addEventListener('mouseleave', hideTip);
+  });
+  document.getElementById('tbl-big').innerHTML =
+    '<tr><th>算法</th><th>耗时 (µs)</th><th>读写量</th><th>有效带宽 (TB/s)</th></tr>' +
+    ALG.map(a => `<tr><td>${a.name}</td><td>${BIG[a.id]}</td><td>${a.traffic}N</td><td>${bw(BIG_N, BIG[a.id], a.traffic)}</td></tr>`).join('');
+})();
+
+// 小 N：分组柱形
+(() => {
+  const svg = document.getElementById('chart-small');
+  const L = 44, R = 10, T = 26, H = 206, W = CW - L - R, max = 25, colW = 22, gap = 2;
+  const y = v => T + H - v / max * H;
+  const groupW = W / SMALL_N.length;
+  for (let t = 0; t <= max; t += 5) {
+    el('line', { x1: L, x2: L + W, y1: y(t), y2: y(t), stroke: GRID, 'stroke-width': 1 }, svg);
+    el('text', { x: L - 8, y: y(t) + 4, fill: MUTED, 'font-size': 13, 'text-anchor': 'end' }, svg, t);
+  }
+  el('text', { x: L - 8, y: T - 14, fill: MUTED, 'font-size': 12, 'text-anchor': 'end' }, svg, 'µs');
+  SMALL_N.forEach((n, g) => {
+    const cx = L + groupW * g + groupW / 2, x0 = cx - (colW * 3 + gap * 2) / 2;
+    el('text', { x: cx, y: T + H + 22, fill: MUTED, 'font-size': 14, 'text-anchor': 'middle' }, svg, `N = ${fmtN(n)}`);
+    ALG.forEach((a, i) => {
+      const v = SMALL[a.id][g], x = x0 + i * (colW + gap);
+      el('path', { d: vbarPath(x, y(0), y(0) - y(v), colW), fill: a.color }, svg);
+      if (a.id !== 'cub') {
+        el('text', { x: x + colW / 2, y: y(v) - 6, fill: TEXT, 'font-size': 13, 'text-anchor': 'middle' }, svg, v.toFixed(1));
+      }
+      const hit = el('rect', { x: x - gap / 2, y: T, width: colW + gap, height: H, class: 'hit' }, svg);
+      hit.addEventListener('mousemove', e => showTip(e,
+        `<b>${a.name}</b><br><span class="m">N =</span> ${fmtN(n)}<br><span class="m">耗时</span> ${v.toFixed(1)} µs`));
+      hit.addEventListener('mouseleave', hideTip);
+    });
+  });
+  document.getElementById('lgd-small').innerHTML = ALG.map(a =>
+    `<span><span class="key" style="background:${a.color}"></span>${a.name}</span>`).join('');
+  document.getElementById('tbl-small').innerHTML =
+    '<tr><th>算法</th>' + SMALL_N.map(n => `<th>N = ${fmtN(n)}</th>`).join('') + '</tr>' +
+    ALG.map(a => `<tr><td>${a.name}</td>${SMALL[a.id].map(v => `<td>${v.toFixed(1)}</td>`).join('')}</tr>`).join('');
+})();
+
+document.querySelectorAll('.chartbox .tbtn').forEach(b => b.addEventListener('click', () => {
+  const box = b.closest('.chartbox');
+  box.classList.toggle('tbl');
+  b.textContent = box.classList.contains('tbl') ? '图表' : '表格';
+}));
+
+// ---------- 翻页 ----------
+const slides = [...document.querySelectorAll('.slide')];
+let si = 0, step = 0, timer = null;
+const stepsOf = s => Math.max(
+  ...[...s.querySelectorAll('.frag')].map(f => +f.dataset.step), ctrl[s.id] ? ctrl[s.id].steps : 0, 0);
+
+function show() {
+  slides.forEach((s, i) => s.classList.toggle('active', i === si));
+  const s = slides[si];
+  s.querySelectorAll('.frag').forEach(f => f.classList.toggle('on', +f.dataset.step <= step));
+  if (ctrl[s.id]) ctrl[s.id].render(step);
+  hideTip();
+  document.getElementById('pos').textContent = `${si + 1} / ${slides.length}` + (stepsOf(s) ? ` · 步骤 ${step}/${stepsOf(s)}` : '');
+  document.getElementById('progress').style.width = ((si + 1) / slides.length * 100) + '%';
+  location.hash = si + 1;
+}
+function next() {
+  if (step < stepsOf(slides[si])) step++;
+  else if (si < slides.length - 1) { si++; step = 0; }
+  else stopPlay();
+  show();
+}
+function prev() {
+  if (step > 0) step--;
+  else if (si > 0) { si--; step = stepsOf(slides[si]); }
+  show();
+}
+function stopPlay() { clearInterval(timer); timer = null; document.getElementById('b-play').textContent = '▶ 自动'; }
+function togglePlay() {
+  if (timer) return stopPlay();
+  timer = setInterval(next, 2200);
+  document.getElementById('b-play').textContent = '⏸ 暂停';
+}
+document.addEventListener('keydown', e => {
+  if (['ArrowRight', ' ', 'PageDown', 'Enter'].includes(e.key)) { e.preventDefault(); next(); }
+  else if (['ArrowLeft', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); prev(); }
+  else if (e.key === 'p' || e.key === 'P') togglePlay();
+  else if (e.key === 'f' || e.key === 'F') {
+    document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  } else if (e.key === 'Home') { si = 0; step = 0; show(); }
+});
+document.getElementById('stage').addEventListener('click', e => {
+  if (!e.target.closest('#nav') && !e.target.closest('.chartbox')) next();
+});
+document.getElementById('b-next').onclick = next;
+document.getElementById('b-prev').onclick = prev;
+document.getElementById('b-play').onclick = togglePlay;
+
+function fit() {
+  const s = Math.min(innerWidth / 1280, (innerHeight - 40) / 720);
+  document.getElementById('stage').style.transform = `scale(${s})`;
+}
+addEventListener('resize', fit);
+fit();
+const h = parseInt(location.hash.slice(1), 10);
+if (h >= 1 && h <= slides.length) si = h - 1;
+show();
+</script>
+</body>
+</html>

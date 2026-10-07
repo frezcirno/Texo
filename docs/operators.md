@@ -90,8 +90,19 @@ before consuming outputs on the CPU.
   Only the k output values are sorted, using bitonic tiles and merges for k > 1024.
   Uses CUDA intrinsics supported by sm_75/sm_80, without CUB or Thrust. Temporary
   storage is constant for k <= 1024 and O(k) for larger outputs.
-- `scan.cu`: inclusive float scan, using recursive block sums. Compile-tested;
-  no maintained runtime test target yet.
+- `scan_scan_then_propagate.cu`, `scan_reduce_then_scan.cu`,
+  `scan_decoupled_look_back.cu`: inclusive float scan (`solve`) built on a
+  generic `scan<Exclusive, Op>(input, output, B, N)` over B rows, sharing the
+  same tile scan (consecutive items per thread, transposed through shared
+  memory). Scan-then-propagate recurses on block sums (4N traffic, two launches
+  per level, `cudaMallocAsync`); reduce-then-scan reduces fixed segments into a
+  static buffer, then rescans with carries (3N traffic, two launches, requires
+  a commutative `Op`); decoupled look-back is single pass (2N traffic, one
+  launch) with packed status words for types of at most 4 bytes and a growable
+  state buffer reused across calls via an epoch. The last two keep global state
+  and must not run concurrently on several streams. Compile-tested in the
+  default build; no maintained runtime test target yet. See
+  [scan_algorithms.html](scan_algorithms.html) for the first two.
 - `dot.cu`: [FP32 dot product](https://leetgpu.com/challenges/dot-product),
   A[N]/B[N] to one FP32 result, with N in [1,100000000]. Inputs require
   16-byte alignment for `float4` loads. The intended contract overwrites result;
