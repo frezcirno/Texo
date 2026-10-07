@@ -2,9 +2,15 @@
 
 constexpr int THREADS = 256;
 constexpr int RADIX = 16; // 每轮处理 4 bit
+constexpr int MAX_N = 50000000;
+constexpr int MAX_BLOCKS = (MAX_N + THREADS - 1) / THREADS;
 
-__global__ void count_digits(const unsigned int *in, int *block_counts, int N,
-                             int shift) {
+__device__ unsigned int g_tmp[MAX_N];
+__device__ int g_block_counts[RADIX * MAX_BLOCKS];
+__device__ int g_block_offsets[RADIX * MAX_BLOCKS];
+__device__ int g_bucket_start[RADIX];
+
+__global__ void count_digits(const unsigned int *in, int N, int shift) {
   __shared__ int counts[RADIX];
 
   int tid = threadIdx.x;
@@ -21,20 +27,19 @@ __global__ void count_digits(const unsigned int *in, int *block_counts, int N,
 
   if (tid < RADIX) {
     // 布局：[digit][block]
-    block_counts[tid * gridDim.x + blockIdx.x] = counts[tid];
+    g_block_counts[tid * gridDim.x + blockIdx.x] = counts[tid];
   }
 }
 
-__global__ void make_offsets(const int *block_counts, int *block_offsets,
-                             int *bucket_start, int blocks) {
+__global__ void make_offsets(int blocks) {
   __shared__ int totals[RADIX];
   int digit = threadIdx.x;
 
   if (digit < RADIX) {
     int sum = 0;
     for (int b = 0; b < blocks; ++b) {
-      block_offsets[digit * blocks + b] = sum;
-      sum += block_counts[digit * blocks + b];
+      g_block_offsets[digit * blocks + b] = sum;
+      sum += g_block_counts[digit * blocks + b];
     }
     totals[digit] = sum;
   }
@@ -43,16 +48,14 @@ __global__ void make_offsets(const int *block_counts, int *block_offsets,
   if (digit == 0) {
     int base = 0;
     for (int d = 0; d < RADIX; ++d) {
-      bucket_start[d] = base;
+      g_bucket_start[d] = base;
       base += totals[d];
     }
   }
 }
 
-__global__ void stable_scatter(const unsigned int *in, unsigned int *out,
-                               const int *block_offsets,
-                               const int *bucket_start, int N, int shift,
-                               int blocks) {
+__global__ void stable_scatter(const unsigned int *in, unsigned int *out, int N,
+                               int shift, int blocks) {
   __shared__ int warp_counts[8][RADIX];
 
   int tid = threadIdx.x;
@@ -86,8 +89,8 @@ __global__ void stable_scatter(const unsigned int *in, unsigned int *out,
       rank += warp_counts[w][digit];
     }
 
-    int pos =
-        bucket_start[digit] + block_offsets[digit * blocks + blockIdx.x] + rank;
+    int pos = g_bucket_start[digit] +
+              g_block_offsets[digit * blocks + blockIdx.x] + rank;
     out[pos] = value;
   }
 }
@@ -96,33 +99,19 @@ __global__ void stable_scatter(const unsigned int *in, unsigned int *out,
 extern "C" void solve(const unsigned int *input, unsigned int *output, int N) {
   int blocks = (N + THREADS - 1) / THREADS;
 
+  // tmp 要在 host 端参与 ping-pong，需取其设备地址（不分配内存）
   unsigned int *tmp;
-  int *block_counts;
-  int *block_offsets;
-  int *bucket_start;
-
-  cudaMalloc(&tmp, N * sizeof(unsigned int));
-  cudaMalloc(&block_counts, RADIX * blocks * sizeof(int));
-  cudaMalloc(&block_offsets, RADIX * blocks * sizeof(int));
-  cudaMalloc(&bucket_start, RADIX * sizeof(int));
+  cudaGetSymbolAddress((void **)&tmp, g_tmp);
 
   const unsigned int *src = input;
   unsigned int *dst = tmp;
 
   for (int shift = 0; shift < 32; shift += 4) {
-    count_digits<<<blocks, THREADS>>>(src, block_counts, N, shift);
-    make_offsets<<<1, RADIX>>>(block_counts, block_offsets, bucket_start,
-                               blocks);
-    stable_scatter<<<blocks, THREADS>>>(src, dst, block_offsets, bucket_start,
-                                        N, shift, blocks);
+    count_digits<<<blocks, THREADS>>>(src, N, shift);
+    make_offsets<<<1, RADIX>>>(blocks);
+    stable_scatter<<<blocks, THREADS>>>(src, dst, N, shift, blocks);
 
     src = dst;
     dst = (dst == tmp) ? output : tmp;
   }
-
-  // 8 轮后结果恰好在 output。
-  cudaFree(tmp);
-  cudaFree(block_counts);
-  cudaFree(block_offsets);
-  cudaFree(bucket_start);
 }
