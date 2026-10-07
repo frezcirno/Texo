@@ -1,21 +1,19 @@
 #include <cuda_runtime.h>
 
-__global__ void reverse_array(float *input, float *buffer, int N) {
+__global__ void reverse_array(float *input, int N) {
   const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  if (tid >= N)
+  if (tid >= N / 2)
     return;
-  buffer[tid] = input[N - tid - 1];
+
+  float v = input[tid];
+  input[tid] = input[N - tid - 1];
+  input[N - tid - 1] = v;
 }
 
 // input is device pointer
 extern "C" void solve(float *input, int N) {
   int threadsPerBlock = 256;
-  int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
+  int blocksPerGrid = (N / 2 + threadsPerBlock - 1) / threadsPerBlock;
 
-  float *buffer;
-  cudaMalloc(&buffer, N * sizeof(float));
-  reverse_array<<<blocksPerGrid, threadsPerBlock>>>(input, buffer, N);
-  cudaMemcpy(input, buffer, N * sizeof(float), cudaMemcpyDeviceToDevice);
-  cudaFree(buffer);
-  cudaDeviceSynchronize();
+  reverse_array<<<blocksPerGrid, threadsPerBlock>>>(input, N);
 }
