@@ -1,45 +1,54 @@
-#include <cooperative_groups.h>
-#include <cooperative_groups/reduce.h>
+#include <cmath>
 #include <cuda_runtime.h>
 
-namespace cg = cooperative_groups;
+template <typename T> struct Add {
+  __host__ __device__ static constexpr T identity() { return T(0); }
+  __device__ static T apply(T a, T b) { return a + b; }
+  __device__ static void atomic_apply(T *address, T value) {
+    atomicAdd(address, value);
+  }
+};
+template <typename T> struct Max {
+  __host__ __device__ static T identity() { return -INFINITY; }
+  __device__ static T apply(T a, T b) { return max(a, b); }
+  __device__ static void atomic_apply(T *address, T value) {
+    atomicMax(address, value);
+  }
+};
 
-__device__ inline float warp_max(float val) {
+template <template <typename> class Op = Max, typename T>
+__device__ inline T warp_reduce(T val) {
 #pragma unroll
   for (int off = 16; off > 0; off >>= 1) {
-    val = max(val, __shfl_down_sync(0xffffffff, val, off));
+    val = Op<T>::apply(val, __shfl_down_sync(0xffffffff, val, off));
   }
   return val;
 }
 
-template <int BLOCK_SIZE> __device__ inline float block_max(float val) {
+template <int BLOCK_SIZE, template <typename> class Op = Max, typename T>
+__device__ inline T block_reduce(T val) {
   constexpr int NUM_WARPS = BLOCK_SIZE / 32;
-  __shared__ float warp_maxes[NUM_WARPS];
-  int lane = threadIdx.x % 32;
-  int warp_idx = threadIdx.x / 32;
-  val = warp_max(val);
+  __shared__ T warp_sums[NUM_WARPS];
+  const int lane = threadIdx.x % 32;
+  const int warp_idx = threadIdx.x / 32;
+  val = warp_reduce<Op, T>(val);
   if (lane == 0) {
-    warp_maxes[warp_idx] = val;
+    warp_sums[warp_idx] = val;
   }
   __syncthreads();
   if (warp_idx == 0) {
-    val = (lane < NUM_WARPS) ? warp_maxes[lane] : -INFINITY;
-    val = warp_max(val);
+    val = (lane < NUM_WARPS) ? warp_sums[lane] : Op<T>::identity();
+    val = warp_reduce<Op, T>(val);
   }
   return val;
 }
 
-__device__ inline float atomic_max_float(float *addr, float val) {
-  int *addr_as_int = reinterpret_cast<int *>(addr);
-  int old = *addr_as_int;
-  int assumed;
-  do {
-    assumed = old;
-    if (val <= __int_as_float(assumed))
-      break;
-    old = atomicCAS(addr_as_int, assumed, __float_as_int(val));
-  } while (assumed != old);
-  return __int_as_float(old);
+__device__ inline void atomic_max_float(float *addr, float val) {
+  if (val >= 0) {
+    atomicMax((int *)addr, __float_as_int(val));
+  } else {
+    atomicMin((unsigned *)addr, __float_as_uint(val));
+  }
 }
 
 template <int BLOCK_SIZE>
@@ -64,7 +73,7 @@ __global__ void max_kernel(const float *__restrict__ input,
     max_res = max(max_res, input[tail_base + tid]);
   }
 
-  max_res = block_max<BLOCK_SIZE>(max_res);
+  max_res = block_reduce<BLOCK_SIZE, Max>(max_res);
   if (threadIdx.x == 0)
     atomic_max_float(output, max_res);
 }
@@ -74,9 +83,6 @@ __global__ void exp_sum_kernel(const float *__restrict__ input,
                                const float *__restrict__ maximum,
                                float *__restrict__ output,
                                float *__restrict__ total, int N) {
-  auto block = cg::this_thread_block();
-  auto tile = cg::tiled_partition<BLOCK_SIZE>(block);
-
   int N4 = N / 4;
   const float4 *input4 = reinterpret_cast<const float4 *>(input);
   float4 *output4 = reinterpret_cast<float4 *>(output);
@@ -85,15 +91,16 @@ __global__ void exp_sum_kernel(const float *__restrict__ input,
   int stride = gridDim.x * blockDim.x;
 
   float local_sum = 0.0f;
+  const float m = *maximum;
 
   for (int i = tid; i < N4; i += stride) {
     float4 x = input4[i];
 
     float4 y;
-    y.x = __expf(x.x - *maximum);
-    y.y = __expf(x.y - *maximum);
-    y.z = __expf(x.z - *maximum);
-    y.w = __expf(x.w - *maximum);
+    y.x = __expf(x.x - m);
+    y.y = __expf(x.y - m);
+    y.z = __expf(x.z - m);
+    y.w = __expf(x.w - m);
 
     output4[i] = y;
     local_sum += y.x + y.y + y.z + y.w;
@@ -102,14 +109,14 @@ __global__ void exp_sum_kernel(const float *__restrict__ input,
   int tail_base = N4 * 4;
   int tail_index = tail_base + tid;
   if (tail_index < N) {
-    float value = __expf(input[tail_index] - *maximum);
+    float value = __expf(input[tail_index] - m);
     output[tail_index] = value;
     local_sum += value;
   }
 
-  local_sum = cg::reduce(tile, local_sum, cg::plus<float>());
+  local_sum = block_reduce<BLOCK_SIZE, Add>(local_sum);
 
-  if (tile.thread_rank() == 0) {
+  if (threadIdx.x == 0) {
     atomicAdd(total, local_sum);
   }
 }
@@ -117,15 +124,10 @@ __global__ void exp_sum_kernel(const float *__restrict__ input,
 template <int BLOCK_SIZE>
 __global__ void normalize_kernel(float *__restrict__ output,
                                  const float *__restrict__ total, int N) {
-  __shared__ float inverse_total;
+  const float inverse_total = 1.0f / total[0];
 
   int N4 = N / 4;
   float4 *output4 = reinterpret_cast<float4 *>(output);
-
-  if (threadIdx.x == 0) {
-    inverse_total = 1.0f / total[0];
-  }
-  __syncthreads();
 
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   int stride = gridDim.x * blockDim.x;
@@ -145,6 +147,13 @@ __global__ void normalize_kernel(float *__restrict__ output,
   }
 }
 
+__device__ float g_stats[2];
+
+__global__ void init_kernel(float *stats) {
+  stats[0] = -INFINITY;
+  stats[1] = 0;
+}
+
 // input, output are device pointers (i.e. pointers to memory on the GPU)
 extern "C" void solve(const float *input, float *output, int N) {
   if (N <= 0)
@@ -157,23 +166,15 @@ extern "C" void solve(const float *input, float *output, int N) {
   max_blocks = max_blocks < 1 ? 1 : max_blocks;
   max_blocks = max_blocks > MAX_BLOCKS ? MAX_BLOCKS : max_blocks;
 
-  int blocks = (N + BLOCK_SIZE - 1) / BLOCK_SIZE;
-  blocks = blocks > MAX_BLOCKS ? MAX_BLOCKS : blocks;
+  static float *stats = nullptr;
+  if (!stats) {
+    cudaGetSymbolAddress((void **)&stats, g_stats);
+  }
 
-  float *maximum_and_total;
-  cudaMalloc(&maximum_and_total, 2 * sizeof(float));
-  cudaMemcpyAsync(&maximum_and_total[0], input, sizeof(float),
-                  cudaMemcpyDeviceToDevice);
-  cudaMemsetAsync(&maximum_and_total[1], 0, sizeof(float));
-
-  max_kernel<BLOCK_SIZE>
-      <<<max_blocks, BLOCK_SIZE>>>(input, &maximum_and_total[0], N);
-  exp_sum_kernel<BLOCK_SIZE><<<blocks, BLOCK_SIZE>>>(
-      input, &maximum_and_total[0], output, &maximum_and_total[1], N);
+  init_kernel<<<1, 1>>>(stats);
+  max_kernel<BLOCK_SIZE><<<max_blocks, BLOCK_SIZE>>>(input, &stats[0], N);
+  exp_sum_kernel<BLOCK_SIZE>
+      <<<max_blocks, BLOCK_SIZE>>>(input, &stats[0], output, &stats[1], N);
   normalize_kernel<BLOCK_SIZE>
-      <<<blocks, BLOCK_SIZE>>>(output, &maximum_and_total[1], N);
-
-  cudaFree((void *)maximum_and_total);
-
-  cudaDeviceSynchronize();
+      <<<max_blocks, BLOCK_SIZE>>>(output, &stats[1], N);
 }
