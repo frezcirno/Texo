@@ -1,7 +1,7 @@
 #include <cuda_runtime.h>
 
-__global__ void rgb_to_grayscale_kernel(const float3 *input, float *output,
-                                        int N) {
+__global__ void rgb_to_grayscale_kernel(const float3 *__restrict__ input,
+                                        float *__restrict__ output, int N) {
   const int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= N)
     return;
