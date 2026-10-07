@@ -19,7 +19,6 @@
   } while (0)
 
 extern "C" void softmax_3kernel(const float *input, float *output, int N);
-extern "C" void softmax_4kernel(const float *input, float *output, int N);
 extern "C" void softmax_online(const float *input, float *output, int N);
 #ifdef SOFTMAX_HAS_CUDNN
 extern "C" bool softmax_cudnn_setup(int N);
@@ -218,7 +217,6 @@ int main(int argc, char **argv) {
 
   const Implementation implementations[] = {
       {"softmax_3kernel", softmax_3kernel},
-      {"softmax_4kernel", softmax_4kernel},
       {"softmax_online", softmax_online},
 #ifdef SOFTMAX_HAS_CUDNN
       {"cuDNN accurate", softmax_cudnn, softmax_cudnn_setup,

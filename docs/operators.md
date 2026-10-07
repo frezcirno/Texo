@@ -278,7 +278,7 @@ before consuming outputs on the CPU.
   both optimizers against an independent CPU Newton reference, including the
   supplied platform coefficients, zero/duplicate columns, scaling, tails, and
   repeated calls.
-- `softmax_3kernel.cu` / `softmax_4kernel.cu`: softmax over one float vector, with
+- `softmax_3kernel.cu`: softmax over one float vector, with
   maximum subtraction for stability. Vectorized paths require 16-byte alignment.
 - `attention.cu`: `softmax(Q * K^T / sqrt(d)) * V`, with `Q[M,d]`, `K[N,d]`, `V[N,d]`.
   Uses an intermediate `M*N` allocation. No masking, batching, or head dimension.

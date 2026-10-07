@@ -75,7 +75,7 @@ BINARIES := $(addprefix $(BIN_DIR)/,$(PROGRAMS))
 KERNEL_SOURCES := $(filter-out src/softmax_cudnn.cu,$(wildcard src/*.cu))
 KERNEL_OBJECTS := $(patsubst src/%.cu,$(BIN_DIR)/kernels/%.o,$(KERNEL_SOURCES))
 SUM_OBJECTS := $(BIN_DIR)/sum_manual.o $(BIN_DIR)/sum_cg.o $(BIN_DIR)/sum_cub.o
-SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o $(BIN_DIR)/softmax_4kernel.o \
+SOFTMAX_OBJECTS := $(BIN_DIR)/softmax_3kernel.o \
 	$(BIN_DIR)/softmax_online.o
 SOFTMAX_CUDNN_FLAGS :=
 SOFTMAX_CUDNN_LIBS :=
