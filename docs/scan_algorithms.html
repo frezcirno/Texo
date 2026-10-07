@@ -18,7 +18,8 @@
     /* 图表分类色：dark 档，已在 #0f1420 / #171e2e 上通过 validate_palette（all-pairs） */
     --series-1: #3987e5; /* Scan-then-Propagate */
     --series-2: #d95926; /* Reduce-then-Scan */
-    --series-3: #199e70; /* cub::DeviceScan */
+    --series-3: #199e70; /* Decoupled Look-back */
+    --baseline: #6f7a92; /* cub::DeviceScan，参照基线用中性灰 */
     --read: #4b5a7c;
     --write: #c07a3a;
   }
@@ -83,6 +84,14 @@
   .cell.carry { background: #203a33; border-color: var(--green); }
   .cell.fixed { background: #3a2a1a; border-color: var(--orange); }
   .cell.final { background: #1d3a2c; border-color: var(--green); }
+  .cell.tiny { font-size: 13px; }
+  .cards3 { display: flex; gap: 18px; }
+  .cards3 .card { flex: 1; min-width: 0; }
+  .cards3 p { font-size: 17px; line-height: 1.65; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid2 .card p { font-size: 17px; line-height: 1.65; }
+  table.cmp.c4 { font-size: 16px; }
+  table.cmp.c4 td:first-child { width: 132px; white-space: nowrap; }
   .blockhdr { display: flex; }
   .blockhdr div { width: 180px; margin-right: 18px; text-align: center; font-size: 14px; color: var(--muted);
     border-bottom: 2px solid var(--line); padding-bottom: 4px; }
@@ -123,7 +132,8 @@
     padding: 16px 18px 12px; position: relative; }
   .chartbox h4 { font-size: 19px; font-weight: 600; margin-bottom: 2px; }
   .chartbox .subt { font-size: 14px; color: var(--muted); margin-bottom: 8px; }
-  .chartbox .lgd { display: flex; gap: 16px; font-size: 14px; color: var(--muted); margin-bottom: 4px; }
+  .chartbox .lgd { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); margin-bottom: 2px; }
+  .chartbox .lgd > span { white-space: nowrap; }
   .chartbox svg text { font-family: inherit; }
   .chartbox .tbtn { position: absolute; top: 14px; right: 16px; background: #1b2336; color: var(--muted);
     border: 1px solid var(--line); border-radius: 6px; font-size: 13px; padding: 3px 10px; cursor: pointer; }
@@ -153,13 +163,15 @@
 <div id="stage">
 
   <section class="slide" id="s-title">
-    <h1>并行 Scan 的两种跨 block 策略</h1>
-    <div class="sub">Scan-then-Propagate 与 Reduce-then-Scan 的区别<br>以 <code>src/scan_scan_then_propagate.cu</code> 和 <code>src/scan_reduce_then_scan.cu</code> 为例 · A800 实测</div>
+    <h1>并行 Scan 的三种跨 block 策略</h1>
+    <div class="sub">Scan-then-Propagate、Reduce-then-Scan 与 Decoupled Look-back 的区别<br>以 <code>src/scan_*.cu</code> 的三个实现为例 · A800 实测</div>
     <div class="algos">
       <div class="card"><h4><span class="key" style="background:var(--series-1)"></span>Scan-then-Propagate</h4>
         <p class="muted">先扫描、写出局部结果，<br>再回头给每个 block 补上偏移</p></div>
       <div class="card"><h4><span class="key" style="background:var(--series-2)"></span>Reduce-then-Scan</h4>
         <p class="muted">先只求各段总和，<br>再带着前缀一次扫描写出</p></div>
+      <div class="card"><h4><span class="key" style="background:var(--series-3)"></span>Decoupled Look-back</h4>
+        <p class="muted">单遍：扫描后发布 tile 状态，<br>向前回看拿到前缀再写出</p></div>
     </div>
     <div class="hint">← → / 空格 翻页 · P 自动播放 · F 全屏</div>
   </section>
@@ -177,7 +189,7 @@
     </div>
     <div class="frag" data-step="2">
       <div class="note warn">跨 block：block 2 的每个结果都要加上 <b>block 0 + block 1 的总和</b>，但 block 之间没有同步手段。<br>
-      两种算法的分歧就在于：<b>这个"前面所有 block 的总和"怎么得到、什么时候加上去</b>。</div>
+      三种算法的分歧就在于：<b>这个"前面所有 block 的总和"怎么得到、什么时候加上去</b>。</div>
     </div>
   </section>
 
@@ -205,51 +217,99 @@
     <div id="rts-note"></div>
   </section>
 
+  <section class="slide" id="s-dlb">
+    <h2><span class="key" style="background:var(--series-3);width:16px;height:16px"></span>Decoupled Look-back <small>scan_decoupled_look_back.cu：单遍，发布状态 + 回看</small></h2>
+    <div class="grid" id="dlb-grid"></div>
+    <div class="meter">
+      <div class="name">显存流量</div>
+      <div class="track" id="dlb-meter"></div>
+      <div class="total" id="dlb-total">0</div>
+      <div class="legend"><span class="key" style="background:var(--read)"></span>读 <span class="key" style="background:var(--write);margin-left:10px"></span>写</div>
+    </div>
+    <div id="dlb-note"></div>
+  </section>
+
+  <section class="slide" id="s-dlb-impl">
+    <h2>Decoupled Look-back 的实现要点</h2>
+    <div class="grid2">
+      <div class="card frag" data-step="1">
+        <h4 class="blue">动态 tile 编号</h4>
+        <p>block 开头对全局计数器 <code>atomicAdd</code> 领号：编号更小的 tile 一定已经在运行，回看等待不会死锁。最后领号的 block 把计数器清零。<br>
+        <span class="muted">换成依赖调度顺序的 <code>blockIdx.x</code> 只快约 5%，所以保留。</span></p>
+      </div>
+      <div class="card frag" data-step="2">
+        <h4 class="purple">状态和值打包成 64 位</h4>
+        <p>≤ 4 字节的 T：状态字和值放进同一个 64 位字，一次读写同时拿到，<b>不需要 <code>__threadfence()</code></b>。更大的 T 才走"写值 → fence → 写状态"。<br>
+        <span class="muted">N = 1 亿：约 1700 → 约 1050 µs。</span></p>
+      </div>
+      <div class="card frag" data-step="3">
+        <h4 class="green">epoch 免清零</h4>
+        <p>状态字高位记录调用序号，上一次调用留下的状态对不上序号，自动视为"未发布"。状态缓冲区按需增长、跨调用复用，不用每次 memset。</p>
+      </div>
+      <div class="card frag" data-step="4">
+        <h4 class="orange">warp 并行回看</h4>
+        <p>warp 0 的 32 个 lane 各看一个前驱：最靠后的 P 之前的全部丢掉，其余<b>按 lane 顺序</b>归约，所以只需要结合律。全是 A 就再往前看 32 个。</p>
+      </div>
+    </div>
+    <div class="frag" data-step="5">
+      <div class="note warn">代价：tile 之间要互相等待前驱发布状态。对照实验里跳过回看（结果是错的，只用来计时），N = 1e7 从约 80 降到 52 µs，比 cub 还快：剩下的差距都在前缀传递链上。</div>
+    </div>
+  </section>
+
   <section class="slide" id="s-diff">
-    <h2>关键差别：第一遍要不要写 output</h2>
-    <div class="row">
-      <div class="card" style="flex:1">
+    <h2>关键差别：数据要过几遍显存</h2>
+    <div class="cards3">
+      <div class="card">
         <h4><span class="key" style="background:var(--series-1)"></span>Scan-then-Propagate</h4>
-        <p>① 读 input，<b>写</b>局部结果 <span class="muted">读 N + 写 N</span></p>
-        <p>② 扫描 block 总和 <span class="muted">很小，递归</span></p>
-        <p>③ <b>读回</b> output，加偏移再<b>写</b> <span class="muted">读 N + 写 N</span></p>
+        <p>① 读 input，<b>写</b>局部结果 <span class="muted nw">读 N + 写 N</span></p>
+        <p>② 扫描 block 总和 <span class="muted nw">很小，递归</span></p>
+        <p>③ <b>读回</b> output，加偏移再<b>写</b> <span class="muted nw">读 N + 写 N</span></p>
         <p style="margin-top:8px;font-size:26px;font-weight:650">共 4N</p>
       </div>
-      <div class="card" style="flex:1">
+      <div class="card">
         <h4><span class="key" style="background:var(--series-2)"></span>Reduce-then-Scan</h4>
-        <p>① 读 input，只算各段总和 <span class="muted">读 N</span></p>
-        <p>② 每段求前面各段之和 <span class="muted">很小，读 L2</span></p>
-        <p>③ <b>再读</b> input，带 carry 扫描后<b>写</b> <span class="muted">读 N + 写 N</span></p>
+        <p>① 读 input，只算各段总和 <span class="muted nw">读 N</span></p>
+        <p>② 每段求前面各段之和 <span class="muted nw">很小，读 L2</span></p>
+        <p>③ <b>再读</b> input，带 carry 扫描后<b>写</b> <span class="muted nw">读 N + 写 N</span></p>
         <p style="margin-top:8px;font-size:26px;font-weight:650">共 3N</p>
+      </div>
+      <div class="card">
+        <h4><span class="key" style="background:var(--series-3)"></span>Decoupled Look-back</h4>
+        <p>① 读 input，扫描 tile，发布总和 <span class="muted nw">读 N</span></p>
+        <p>② 回看前驱 tile 的状态得到 carry <span class="muted nw">很小，读 L2</span></p>
+        <p>③ 加上 carry 后<b>写</b> <span class="muted nw">写 N</span></p>
+        <p style="margin-top:8px;font-size:26px;font-weight:650">共 2N</p>
       </div>
     </div>
     <div class="frag" data-step="1">
-      <div class="note ok">两者都要把数据过两遍。区别在于：<span class="nw">Scan-then-Propagate</span> 第一遍就把<b>还不完整的结果</b>写进显存，第二遍再读回来改；
-      <span class="nw">Reduce-then-Scan</span> 第一遍只留下每段一个数，第二遍重新读 <b>input</b>，算出的就是最终结果。<br>
-      省下的正好是"中间结果写出去再读回来"的一个 N。</div>
+      <div class="note ok"><span class="nw">Scan-then-Propagate</span> 第一遍就把<b>不完整的结果</b>写进显存，第二遍读回来改；
+      <span class="nw">Reduce-then-Scan</span> 第一遍只留下每段一个数，第二遍重新读 input，直接算出最终结果，省掉一个 N。</div>
     </div>
     <div class="frag" data-step="2">
-      <div class="note warn">代价：第一遍的求和是按线程交错累加的，元素的合并顺序被打乱，所以 ⊕ 还要满足<b>交换律</b>。
-      加、乘、max、min 都满足；浮点加法的结果会和顺序扫描有舍入级别的差异。</div>
+      <div class="note ok"><span class="nw">Decoupled Look-back</span> 把两遍合成一遍：tile 读进来后一直留在片上，拿到 carry 再写出，又省掉一个 N。
+      代价是 tile 之间要等前驱发布状态。</div>
+    </div>
+    <div class="frag" data-step="3">
+      <div class="note warn"><span class="nw">Reduce-then-Scan</span> 第一遍按线程交错累加，合并顺序被打乱，所以 ⊕ 还要满足<b>交换律</b>；另外两种只需结合律。</div>
     </div>
   </section>
 
   <section class="slide" id="s-table">
     <h2>启动次数、临时内存与 grid 形状</h2>
-    <table class="cmp">
-      <tr><th></th><th><span class="key" style="background:var(--series-1)"></span>Scan-then-Propagate</th><th><span class="key" style="background:var(--series-2)"></span>Reduce-then-Scan</th></tr>
-      <tr class="hl"><td>显存流量</td><td>4N（读 2N、写 2N）</td><td>3N（读 2N、写 N）</td></tr>
-      <tr><td>grid 大小</td><td>随 N 增长：每个 block 一个 tile，<br>N = 1e8 时约 4.9 万个 block</td><td>固定 ≈ 同时驻留的 block 数（A800 上为 540），<br>每个 block 串行推进若干 tile</td></tr>
-      <tr><td>块总和的处理</td><td>块总和数组本身可能很长 → <b>递归调用 scan</b></td><td>段数 ≤ 驻留 block 数，<b>每个 block 自己求和</b>即可</td></tr>
-      <tr class="hl"><td>kernel 启动</td><td>每层 2 次 + 递归：<br>N = 1e5 时 3 次，N = 1e8 时 5 次</td><td>2 次；N ≤ 4 个 tile 时只启动 1 次</td></tr>
-      <tr><td>临时内存</td><td>每层 <code>cudaMallocAsync</code> / <code>cudaFreeAsync</code></td><td>静态 <code>__device__</code> 数组（256KB）</td></tr>
-      <tr><td>对 ⊕ 的要求</td><td>结合律</td><td>结合律 + 交换律</td></tr>
-      <tr><td>使用限制</td><td>—</td><td>静态数组全局共享：不能多 stream / 多线程并发调用</td></tr>
+    <table class="cmp c4">
+      <tr><th></th><th><span class="key" style="background:var(--series-1)"></span>Scan-then-Propagate</th><th><span class="key" style="background:var(--series-2)"></span>Reduce-then-Scan</th><th><span class="key" style="background:var(--series-3)"></span>Decoupled Look-back</th></tr>
+      <tr class="hl"><td>显存流量</td><td>4N（读 2N、写 2N）</td><td>3N（读 2N、写 N）</td><td>2N（读 N、写 N）</td></tr>
+      <tr><td>grid 大小</td><td>每个 block 一个 tile，<br>N = 1e8 时约 4.9 万个 block</td><td>固定 ≈ 驻留 block 数（A800 上为 540），<br>每个 block 串行推进若干 tile</td><td>每个 block 一个 tile，<br>用 <code>atomicAdd</code> 动态领号</td></tr>
+      <tr><td>跨 block 前缀</td><td>块总和可能很长 → <b>递归调用 scan</b></td><td>每个 block <b>自己求</b>前面各段之和</td><td>发布 tile 状态，warp 0 <b>回看</b>前驱</td></tr>
+      <tr class="hl"><td>kernel 启动</td><td>每层 2 次 + 递归：<br>N = 1e5 时 3 次，N = 1e8 时 5 次</td><td>2 次；N ≤ 4 个 tile 时 1 次</td><td>1 次</td></tr>
+      <tr><td>临时内存</td><td>每层 <code>cudaMallocAsync</code> / <code>cudaFreeAsync</code></td><td>静态 <code>__device__</code> 数组（256KB）</td><td>按需增长的状态缓冲区，<br>靠 epoch 复用，不用每次清零</td></tr>
+      <tr><td>对 ⊕ 的要求</td><td>结合律</td><td>结合律 + 交换律</td><td>结合律</td></tr>
+      <tr><td>使用限制</td><td>—</td><td>全局静态数组：不能多 stream 并发调用</td><td>全局状态缓冲区：不能多 stream 并发调用</td></tr>
     </table>
   </section>
 
   <section class="slide" id="s-tile">
-    <h2>两者共用的底座：tile 扫描 <small>256 线程 × 每线程 8 个元素 = 2048</small></h2>
+    <h2>三者共用的底座：tile 扫描 <small>每个 tile 2048 个元素；下面以 256 线程 × 8 为例，DLB 用 128 × 16</small></h2>
     <div class="pipe">
       <div class="stagebox frag" data-step="1">
         <h4 class="blue">① 合并读入</h4>
@@ -277,17 +337,17 @@ T carry = <span class="c">/* 前面各段总和之和 */</span>;
 <span class="k">for</span> (size_t base = begin; base &lt; end; base += TILE) {
   carry = Op&lt;T&gt;::apply(carry, scan_tile&lt;Exclusive, Op&gt;(input + base, output + base, valid, carry, tile));
 }</pre>
-      <div class="note ok" style="margin-top:12px">所以下一页的性能对比只反映<b>跨 block 策略</b>的差别：两边的 tile 扫描代码完全相同。</div>
+      <div class="note ok" style="margin-top:12px">三个文件的 tile 扫描代码相同（DLB 只是线程数和每线程元素数不同），性能差别主要来自<b>跨 block 策略</b>。</div>
     </div>
   </section>
 
   <section class="slide" id="s-perf">
-    <h2>实测 <small>A800 80GB PCIe，float inclusive sum，单位 µs，越短越好；悬停看详情</small></h2>
+    <h2>实测 <small>A800 80GB PCIe（测试时有其他负载），float inclusive sum，三轮中位数，单位 µs，越短越好</small></h2>
     <div class="charts">
       <div class="chartbox" id="cb-big">
         <button class="tbtn">表格</button>
         <h4>大 N：N = 1 亿</h4>
-        <div class="subt">受显存带宽限制，耗时 ∝ 读写量</div>
+        <div class="subt">灰色为参照基线 cub；悬停看有效带宽</div>
         <svg id="chart-big" width="516" height="300"></svg>
         <table class="data" id="tbl-big"></table>
       </div>
@@ -296,24 +356,25 @@ T carry = <span class="c">/* 前面各段总和之和 */</span>;
         <h4>小 N：启动开销为主</h4>
         <div class="subt">N = 1 万 ~ 100 万</div>
         <div class="lgd" id="lgd-small"></div>
-        <svg id="chart-small" width="516" height="276"></svg>
+        <svg id="chart-small" width="516" height="256"></svg>
         <table class="data" id="tbl-small"></table>
       </div>
     </div>
     <div class="row" style="margin-top:16px;gap:28px">
-      <div class="note ok" style="flex:1;margin-top:0">N = 1 亿：两者有效带宽都约 1.5 TB/s，<br>1054 / 803 ≈ 1.31，接近 4N / 3N = 1.33。</div>
-      <div class="note ok" style="flex:1;margin-top:0">小 N：从 3 次启动降到 2 次（或 1 次），<br>N = 1 万时 17.7 → 7.9 µs。</div>
+      <div class="note warn" style="flex:1;margin-top:0">N = 1 亿：DLB 读写最少（2N），有效带宽却只有 0.88 TB/s，其余三个约 1.25 TB/s；比 cub 慢 1.4 倍，差在前缀传递链。</div>
+      <div class="note ok" style="flex:1;margin-top:0">小 N：DLB 只启动 1 次 kernel，N = 1 万时 4.8 µs，比 cub（6.4）还快；STP 要 18.9 µs。</div>
     </div>
   </section>
 
   <section class="slide" id="s-sum">
     <h2>总结</h2>
     <ul>
-      <li class="frag" data-step="1">两种算法的共同点：block 内都只扫描一个 tile，跨 block 都要靠"前面所有 block 的总和"。</li>
-      <li class="frag" data-step="2"><b>Scan-then-Propagate</b> 先写出不完整的结果再回头修正：实现简单，只需结合律，但读写 4N，还要递归和多次启动。</li>
-      <li class="frag" data-step="3"><b>Reduce-then-Scan</b> 第一遍只求总和，第二遍重新读 input 直接写最终结果：读写 3N，固定 grid、不递归、无动态分配；代价是要求交换律、静态缓冲区不能并发。</li>
-      <li class="frag" data-step="4">实测：大 N 快约 1.3 倍（≈ 4N / 3N），小 N 快 2 倍左右。</li>
-      <li class="frag" data-step="5"><span class="muted">下一步：</span>单遍 <b>decoupled look-back</b>（cub 的做法）只读写 2N，正好是剩下的 803 / 543 ≈ 1.48 倍差距。</li>
+      <li class="frag" data-step="1">三种算法在 block 内都只扫描一个 tile，区别在于"前面所有 block 的总和"怎么得到。</li>
+      <li class="frag" data-step="2"><b>Scan-then-Propagate</b>：先写出不完整的结果再回头修正。实现简单、只需结合律，但读写 4N，还要递归和多次启动。</li>
+      <li class="frag" data-step="3"><b>Reduce-then-Scan</b>：第一遍只求总和，第二遍重读 input 直接写最终结果。读写 3N、固定 grid、不递归；要求交换律，静态缓冲区不能并发。</li>
+      <li class="frag" data-step="4"><b>Decoupled Look-back</b>：单遍 2N、1 次启动，靠发布 tile 状态 + 回看传递前缀；只需结合律，状态缓冲区不能并发。</li>
+      <li class="frag" data-step="5">实测：小 N 时 DLB 最快，比 cub 还快；N = 1 亿时三者为 1255 / 964 / 911 µs，cub 651 µs。DLB 读写最少却只比 RTS 快 6%，瓶颈在回看链。</li>
+      <li class="frag" data-step="6"><span class="muted">下一步：</span>用硬件计数器（ncu）定位回看链上的等待时间，这台机器上 ncu 暂无读取计数器的权限。</li>
     </ul>
   </section>
 
@@ -445,16 +506,38 @@ buildDemo('rts', [
   { segs: 3, total: '3N', note: '<div class="note ok">每个 output 元素只写一次。和左边相比，少了"写出中间结果再读回"的那个 N。</div>' },
 ]);
 
+const tileIncl = blockIncl; // tile i 的 inclusive 前缀
+buildDemo('dlb', [
+  { label: 'input', values: X, step: 0 },
+  { label: '① 每个 tile 内 scan', sub: '结果先留在寄存器里，不写显存', values: local, cls: 'done', step: 1, fade: true,
+    tag: '唯一的 kernel' },
+  { label: '　 发布状态', sub: 'tile 0 发 P，其余先发 A',
+    values: sparse(blockSum.map((v, b) => (b === 0 ? 'P:' : 'A:') + v), BS - 1),
+    cls: i => (i < BS ? 'carry tiny' : 'sum tiny'), step: 1, fade: true },
+  { label: '② warp 0 回看前驱', sub: '遇到 P 就停，遇到 A 累加后继续', values: sparse(carry, 0), cls: 'carry', step: 2 },
+  { label: '　 更新为 P', sub: 'carry ⊕ 本 tile 总和', values: sparse(tileIncl.map(v => 'P:' + v), BS - 1),
+    cls: 'carry tiny', step: 2 },
+  { label: '③ 加上 carry 写出', sub: '每个元素只写一次', values: finalY, cls: 'final', step: 3 },
+], [
+  { t: 'r', text: '读 input N', w: UNIT }, { t: 'w', text: '写 output N', w: UNIT },
+], [
+  { segs: 0, total: '0' },
+  { segs: 1, total: '1N', note: '<div class="note ok">tile 扫描完先发布状态：<b>A</b> = 只知道本 tile 的总和，<b>P</b> = 已知从行首到本 tile 的前缀。tile 0 没有前驱，直接发 P。结果还在寄存器里，没写显存。</div>' },
+  { segs: 1, total: '1N', note: '<div class="note warn">以 tile 3 为例：tile 2 是 A:21，继续往前；tile 1 是 P:31，停。carry = 31 + 21 = 52，再把自己更新为 P:80。<br>等前驱发布状态的这段时间，就是单遍算法要付的代价。</div>' },
+  { segs: 2, total: '2N', note: '<div class="note ok">每个元素只读一次、写一次，只启动 1 个 kernel。</div>' },
+]);
+
 // ---------- 图表 ----------
 const ALG = [
   { id: 'stp', name: 'Scan-then-Propagate', color: 'var(--series-1)', traffic: 4 },
   { id: 'rts', name: 'Reduce-then-Scan', color: 'var(--series-2)', traffic: 3 },
-  { id: 'cub', name: 'cub::DeviceScan', color: 'var(--series-3)', traffic: 2 },
+  { id: 'dlb', name: 'Decoupled Look-back', color: 'var(--series-3)', traffic: 2 },
+  { id: 'cub', name: 'cub::DeviceScan', color: 'var(--baseline)', traffic: 2 },
 ];
-// A800 GPU 5 空闲时实测（/tmp/scan_explore/bench6，取第一轮）
+// A800 GPU 7 实测（测试时负载 25%→70%，/tmp/scan_explore/bench12，三轮取中位数）
 const SMALL_N = [10000, 100000, 1000000];
-const SMALL = { stp: [17.7, 18.3, 21.3], rts: [7.9, 8.4, 12.1], cub: [6.8, 8.0, 11.9] };
-const BIG = { stp: 1054, rts: 803, cub: 543 };
+const SMALL = { stp: [18.9, 17.7, 20.7], rts: [7.6, 8.0, 11.9], dlb: [4.8, 5.5, 13.0], cub: [6.4, 7.6, 13.2] };
+const BIG = { stp: 1255, rts: 964, dlb: 911, cub: 651 };
 const BIG_N = 1e8;
 const fmtN = n => ({ 10000: '1 万', 100000: '10 万', 1000000: '100 万', 100000000: '1 亿' }[n]);
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -494,13 +577,13 @@ const bw = (n, us, traffic) => (n * 4 * traffic / (us * 1e-6) / 1e12).toFixed(2)
 // 大 N：横向条形
 (() => {
   const svg = document.getElementById('chart-big');
-  const L = 176, R = 84, T = 8, W = CW - L - R, band = 78, bar = 24, max = 1200;
+  const L = 176, R = 84, T = 8, W = CW - L - R, band = 62, bar = 24, max = 1500, rows = ALG.length;
   const x = v => L + v / max * W;
   for (let t = 0; t <= max; t += 300) {
-    el('line', { x1: x(t), x2: x(t), y1: T, y2: T + band * 3, stroke: GRID, 'stroke-width': 1 }, svg);
-    el('text', { x: x(t), y: T + band * 3 + 20, fill: MUTED, 'font-size': 13, 'text-anchor': 'middle' }, svg, t.toLocaleString());
+    el('line', { x1: x(t), x2: x(t), y1: T, y2: T + band * rows, stroke: GRID, 'stroke-width': 1 }, svg);
+    el('text', { x: x(t), y: T + band * rows + 20, fill: MUTED, 'font-size': 13, 'text-anchor': 'middle' }, svg, t.toLocaleString());
   }
-  el('text', { x: L + W, y: T + band * 3 + 40, fill: MUTED, 'font-size': 13, 'text-anchor': 'end' }, svg, 'µs');
+  el('text', { x: L + W, y: T + band * rows + 40, fill: MUTED, 'font-size': 13, 'text-anchor': 'end' }, svg, 'µs');
   ALG.forEach((a, i) => {
     const v = BIG[a.id], yc = T + band * i + band / 2, y = yc - bar / 2;
     el('circle', { cx: 10, cy: yc - 9, r: 5, fill: a.color }, svg);
@@ -523,7 +606,7 @@ const bw = (n, us, traffic) => (n * 4 * traffic / (us * 1e-6) / 1e12).toFixed(2)
 // 小 N：分组柱形
 (() => {
   const svg = document.getElementById('chart-small');
-  const L = 44, R = 10, T = 26, H = 206, W = CW - L - R, max = 25, colW = 22, gap = 2;
+  const L = 44, R = 10, T = 26, H = 188, W = CW - L - R, max = 25, colW = 22, gap = 2;
   const y = v => T + H - v / max * H;
   const groupW = W / SMALL_N.length;
   for (let t = 0; t <= max; t += 5) {
@@ -532,12 +615,13 @@ const bw = (n, us, traffic) => (n * 4 * traffic / (us * 1e-6) / 1e12).toFixed(2)
   }
   el('text', { x: L - 8, y: T - 14, fill: MUTED, 'font-size': 12, 'text-anchor': 'end' }, svg, 'µs');
   SMALL_N.forEach((n, g) => {
-    const cx = L + groupW * g + groupW / 2, x0 = cx - (colW * 3 + gap * 2) / 2;
+    const cx = L + groupW * g + groupW / 2, x0 = cx - (colW * ALG.length + gap * (ALG.length - 1)) / 2;
     el('text', { x: cx, y: T + H + 22, fill: MUTED, 'font-size': 14, 'text-anchor': 'middle' }, svg, `N = ${fmtN(n)}`);
     ALG.forEach((a, i) => {
       const v = SMALL[a.id][g], x = x0 + i * (colW + gap);
       el('path', { d: vbarPath(x, y(0), y(0) - y(v), colW), fill: a.color }, svg);
-      if (a.id !== 'cub') {
+      // 只标 STP 和 DLB：两者不相邻，标签不会互相压住；其余看悬停和表格。
+      if (a.id === 'stp' || a.id === 'dlb') {
         el('text', { x: x + colW / 2, y: y(v) - 6, fill: TEXT, 'font-size': 13, 'text-anchor': 'middle' }, svg, v.toFixed(1));
       }
       const hit = el('rect', { x: x - gap / 2, y: T, width: colW + gap, height: H, class: 'hit' }, svg);
