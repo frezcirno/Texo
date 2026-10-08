@@ -165,22 +165,22 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
       const float *qs = smem + (t & 1) * STAGE, *ks = qs + BR * LDK;
 #pragma unroll
       for (int k = 0; k < KC; k += 4) {
-        float4 q[4], kv[4];
+        float4 q[4], key[4];
 #pragma unroll
         for (int i = 0; i < 4; ++i)
           q[i] = *reinterpret_cast<const float4 *>(qs + (ty * 4 + i) * LDK + k);
 #pragma unroll
         for (int c = 0; c < 4; ++c)
-          kv[c] =
+          key[c] =
               *reinterpret_cast<const float4 *>(ks + (tx + 16 * c) * LDK + k);
 #pragma unroll
         for (int i = 0; i < 4; ++i)
 #pragma unroll
           for (int c = 0; c < 4; ++c) {
-            s[i][c] = fmaf(q[i].x, kv[c].x, s[i][c]);
-            s[i][c] = fmaf(q[i].y, kv[c].y, s[i][c]);
-            s[i][c] = fmaf(q[i].z, kv[c].z, s[i][c]);
-            s[i][c] = fmaf(q[i].w, kv[c].w, s[i][c]);
+            s[i][c] = fmaf(q[i].x, key[c].x, s[i][c]);
+            s[i][c] = fmaf(q[i].y, key[c].y, s[i][c]);
+            s[i][c] = fmaf(q[i].z, key[c].z, s[i][c]);
+            s[i][c] = fmaf(q[i].w, key[c].w, s[i][c]);
           }
       }
     }
