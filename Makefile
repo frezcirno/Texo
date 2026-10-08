@@ -16,7 +16,7 @@ PROGRAMS := reduce_bench max_bench softmax_bench attention_bench conv2d_bench \
             conv3d_bench mv_bench gemm_bench cat_ce_test mse_test gauss_blur_test top_k_test
 ELEMENTWISE_TESTS := relu_test leaky_relu_test silu_test swiglu_test clip_test geglu_test
 DOT_TESTS := dot_test dot_fp16_test
-BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test batched_mm_fp16_test alibi_test mm_int8_test mm_int4_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test rms_norm_test group_norm_test layer_norm_test max_pooling_2d_test count_test count3d_test slice_sum_test slice_sum2d_test slice_sum3d_test max_subarray_sum_test 2d_jacobi_stencil_test dequantization_test rope_test sparse_mm_test stream_compaction_test segmented_scan_test fft2d_test adderboard_test gqa_test
+BASIC_TESTS := mat_add_test mat_copy_test reverse_test conv1d_test rainbow_test interleave_test sigmoid_test rgb2grayscale_test batched_mm_test batched_mm_fp16_test alibi_test mm_int8_test mm_int4_test lr_test mc_int_test mat_pow_test nn_test batch_norm_test rms_norm_test group_norm_test layer_norm_test max_pooling_2d_test count_test count3d_test slice_sum_test slice_sum2d_test slice_sum3d_test max_subarray_sum_test 2d_jacobi_stencil_test dequantization_test rope_test sparse_mm_test stream_compaction_test segmented_scan_test fft2d_test adderboard_test gqa_test mhsa_test mhca_test
 PROGRAMS += $(ELEMENTWISE_TESTS) $(BASIC_TESTS) $(DOT_TESTS) lr_newton_test
 GEMM_BENCHES := gemm_bench gemm_tiled_bench gemm_wmma_bench gemm_wmma_tiled_bench \
                 gemm_wmma_tiled_pipeline_bench gemm_wmma_tiled_pipeline_schedule_bench \

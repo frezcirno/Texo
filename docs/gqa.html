@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Grouped-Query Attention</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171e2e;
+    --line: #2a3550;
+    --text: #e6e9f0;
+    --muted: #8a94ab;
+    --blue: #5b9dff;
+    --green: #3ccf91;
+    --orange: #ffa94d;
+    --red: #ff6b6b;
+    --purple: #b48cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #070a10; color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; overflow: hidden; }
+  #viewport { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #stage { width: 1280px; height: 720px; position: relative; background: var(--bg);
+    border-radius: 12px; overflow: hidden; transform-origin: center center; box-shadow: 0 0 60px #000; }
+  .slide { position: absolute; inset: 0; padding: 56px 72px; opacity: 0; pointer-events: none;
+    transition: opacity .45s ease; }
+  .slide.active { opacity: 1; pointer-events: auto; }
+  h1 { font-size: 56px; font-weight: 700; letter-spacing: 1px; }
+  h2 { font-size: 34px; font-weight: 650; margin-bottom: 24px; }
+  h2 small { font-size: 18px; color: var(--muted); font-weight: 400; margin-left: 12px; }
+  p, li { font-size: 22px; line-height: 1.7; }
+  .muted { color: var(--muted); }
+  .blue { color: var(--blue); } .green { color: var(--green); } .orange { color: var(--orange); }
+  .red { color: var(--red); } .purple { color: var(--purple); }
+  .math { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; font-size: 26px; }
+  .formula { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 24px; display: inline-block; font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif;
+    font-size: 26px; }
+  sub, sup { font-size: 62%; }
+  code, pre { font-family: "JetBrains Mono", "Fira Code", Consolas, monospace; }
+  .frag { opacity: 0; transform: translateY(12px); transition: opacity .45s, transform .45s; }
+  .frag.on { opacity: 1; transform: none; }
+  .row { display: flex; gap: 24px; align-items: flex-start; }
+  .calc { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; font-size: 21px; line-height: 1.7;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; }
+  .calc .num, .num { font-family: Consolas, monospace; }
+  .note { font-size: 18px; padding: 10px 16px; border-radius: 8px; margin-top: 12px; }
+  .note.warn { background: rgba(255,169,77,.12); border: 1px solid rgba(255,169,77,.5); color: #ffd3a1; }
+  .note.ok { background: rgba(60,207,145,.12); border: 1px solid rgba(60,207,145,.5); color: #a9f0cf; }
+  .note.bad { background: rgba(255,107,107,.12); border: 1px solid rgba(255,107,107,.5); color: #ffc0c0; }
+
+  /* title */
+  #s-title { display: flex; flex-direction: column; justify-content: center; }
+  #s-title .sub { font-size: 26px; color: var(--muted); margin-top: 18px; }
+  #s-title .hint { position: absolute; bottom: 48px; font-size: 18px; color: var(--muted); }
+
+  /* head diagrams */
+  .hd { position: relative; height: 300px; }
+  .hd svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .hd line { stroke-width: 2.5; transition: opacity .4s; }
+  .hbox { position: absolute; width: 96px; height: 54px; margin-left: -48px; border-radius: 9px;
+    display: flex; align-items: center; justify-content: center; font-family: Consolas, monospace; font-size: 18px;
+    border: 1px solid var(--line); background: #212a3f;
+    transition: left .55s cubic-bezier(.3,.7,.2,1), opacity .4s, background .35s, border-color .35s, transform .35s; }
+  .hbox.kv { height: 64px; }
+  .hbox.hi { transform: translateY(-6px) scale(1.06); box-shadow: 0 0 18px rgba(255,169,77,.35); border-color: var(--orange); }
+  .hbox.dim { opacity: .25; }
+  .rowlabel { position: absolute; left: 0; font-size: 16px; color: var(--muted); }
+
+  /* bars */
+  .hbar { display: flex; align-items: center; gap: 16px; margin: 14px 0; }
+  .hbar .lab { width: 210px; font-size: 20px; }
+  .hbar .track { width: 640px; height: 40px; background: #1a2133; border-radius: 8px; overflow: hidden; }
+  .hbar .fill { height: 100%; width: 0; border-radius: 8px; transition: width 1s cubic-bezier(.3,.7,.2,1); }
+  .hbar .val { font-family: Consolas, monospace; font-size: 20px; width: 220px; }
+
+  /* memory strip */
+  .strip { position: relative; height: 56px; display: flex; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); }
+  .strip .seg { height: 100%; display: flex; align-items: center; justify-content: center; font-family: Consolas, monospace;
+    font-size: 16px; border-right: 1px solid #0f1420; transition: filter .4s, opacity .4s; }
+  .brk { position: absolute; height: 32px; border: 2px solid var(--green); border-top: none; border-radius: 0 0 10px 10px;
+    display: flex; align-items: flex-end; justify-content: center; font-size: 16px; padding-bottom: 2px;
+    transition: opacity .4s; opacity: 0; }
+  .brk.on { opacity: 1; }
+  .blocks { position: relative; height: 46px; }
+  .blk { position: absolute; top: 0; height: 40px; border-radius: 6px; border: 1px solid var(--blue);
+    background: rgba(91,157,255,.18); font-size: 13px; font-family: Consolas, monospace;
+    display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .4s, background .3s; }
+  .blk.on { opacity: 1; }
+  .blk.hi { background: rgba(255,169,77,.35); border-color: var(--orange); }
+  .tick { position: absolute; top: -66px; height: 112px; border-left: 2px dashed var(--orange); opacity: 0; transition: opacity .4s; }
+  .tick.on { opacity: .8; }
+
+  /* utilisation */
+  .ublocks { display: flex; gap: 10px; align-items: flex-end; height: 120px; }
+  .ub { width: 70px; height: 110px; border: 1px solid var(--line); border-radius: 6px; position: relative; overflow: hidden;
+    background: #1a2133; }
+  .ub .uf { position: absolute; left: 0; right: 0; top: 0; transition: height .7s; display: flex; flex-direction: column; }
+  .ub .uf div { flex-basis: 0; }
+  .ub .pct { position: absolute; bottom: 4px; left: 0; right: 0; text-align: center; font-size: 13px;
+    font-family: Consolas, monospace; color: var(--text); }
+
+  /* grid of blocks */
+  .bgrid { display: grid; grid-template-columns: repeat(64, 13px); gap: 2px; }
+  .bc { width: 13px; height: 20px; border-radius: 2px; background: #212a3f; transition: background .3s; }
+  .bc.w1 { background: var(--blue); } .bc.w2 { background: var(--purple); } .bc.w3 { background: var(--orange); }
+  .bc.done { background: #2d3a57; }
+  .ylab { display: grid; grid-template-rows: repeat(8, 20px); row-gap: 2px; font-size: 13px; color: var(--muted);
+    font-family: Consolas, monospace; text-align: right; padding-right: 8px; }
+
+  pre { background: #0b1019; border: 1px solid var(--line); border-radius: 10px; padding: 14px 20px;
+    font-size: 16px; line-height: 1.5; color: #cdd5e5; }
+  pre .c { color: #6a7794; } pre .k { color: #c792ea; } pre .t { color: #82aaff; }
+  pre .h0 { display: inline-block; width: 100%; transition: background .3s; }
+
+  .cmp { display: flex; gap: 50px; align-items: flex-end; height: 240px; }
+  .cmp .col { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 18px; text-align: center; }
+  .cmp .colbar { width: 120px; border-radius: 8px 8px 0 0; transition: height 1s cubic-bezier(.3,.7,.2,1); height: 0; }
+
+  /* nav */
+  #nav { position: fixed; bottom: 14px; right: 18px; display: flex; gap: 8px; align-items: center; z-index: 10;
+    font-size: 14px; color: var(--muted); }
+  #nav button { background: #1b2336; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 12px; cursor: pointer; font-size: 14px; }
+  #nav button:hover { border-color: var(--blue); }
+  #progress { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--blue); transition: width .4s; }
+</style>
+</head>
+<body>
+<div id="viewport">
+<div id="stage">
+
+  <!-- 1. 标题 -->
+  <section class="slide" id="s-title">
+    <h1>Grouped-Query Attention</h1>
+    <div class="sub">多个 query 头共用一组 K/V：KV cache 缩小 group 倍</div>
+    <div class="sub" style="font-size:20px;margin-top:40px">
+      <span class="blue">MHA / MQA / GQA</span> · <span class="green">头的映射</span> · <span class="orange">在 kernel 里复用 K/V</span>
+    </div>
+    <div class="sub" style="font-size:18px;margin-top:14px">配套：flash_attention.html（block 内的分块循环）· src/gqa.cu</div>
+    <div class="hint">→ / 空格：下一步 &nbsp;·&nbsp; ←：上一步 &nbsp;·&nbsp; P：自动播放 &nbsp;·&nbsp; F：全屏</div>
+  </section>
+
+  <!-- 2. 三种变体 -->
+  <section class="slide" id="s-variants">
+    <h2 id="var-title">三种注意力头的组织方式</h2>
+    <div class="hd" id="var-hd"><svg id="var-svg"></svg></div>
+    <div id="var-note" style="margin-top:6px"></div>
+  </section>
+
+  <!-- 3. KV cache -->
+  <section class="slide" id="s-cache">
+    <h2>为什么要省 K/V：推理时的 KV cache <small>LLaMA-3 8B：32 层，32 个 Q 头，d = 128，bf16</small></h2>
+    <div class="formula">每个 token 的 KV cache = 2 (K 和 V) × 层数 × <span class="green">H<sub>kv</sub></span> × d × 2 B</div>
+    <div id="cache-bars" style="margin-top:22px"></div>
+    <div class="frag" data-step="4" style="margin-top:10px">
+      <p style="font-size:20px">解码阶段每生成一个 token 都要把整个 KV cache 从显存读一遍，<b>带宽受限</b> →
+        KV 越小，生成越快，同一张卡能放的 batch / 上下文也越多。</p>
+      <p class="muted" style="font-size:18px">MQA 最省但效果会掉；GQA 的质量接近 MHA，速度接近 MQA（Ainslie et al., 2023）。</p>
+    </div>
+  </section>
+
+  <!-- 4. 映射 -->
+  <section class="slide" id="s-map">
+    <h2>Q 头 → KV 头 <small>H<sub>q</sub> = 8, H<sub>kv</sub> = 2, group = 4</small></h2>
+    <div class="hd" id="map-hd" style="height:260px"><svg id="map-svg"></svg></div>
+    <div class="row" style="gap:30px">
+      <div class="formula" style="font-size:24px">kv_head = q_head / group</div>
+      <div class="calc" id="map-calc" style="flex:1;min-height:60px"></div>
+    </div>
+    <div id="map-note"></div>
+  </section>
+
+  <!-- 5. 朴素做法 -->
+  <section class="slide" id="s-naive">
+    <h2>朴素做法的代价 <small>性能用例：H<sub>q</sub> = 32, H<sub>kv</sub> = 8, S = 1024, d = 128, fp32</small></h2>
+    <div class="frag" data-step="1">
+      <p><span class="orange">① 先展开再算</span>：<code>K.repeat_interleave(group)</code>，把 K/V 复制成 32 个头</p>
+      <p class="muted" style="font-size:19px;margin-left:30px">K、V 各从 4 MB 变成 16 MB：多写 32 MB 再读 32 MB，GQA 省下的显存在算子里又花回去了</p>
+    </div>
+    <div class="frag" data-step="2" style="margin-top:16px">
+      <p><span class="orange">② 原版 gqa.cu</span>：一个 block 算 1 个 query（grid = H<sub>q</sub> × S = 32768 个 block）</p>
+      <p class="muted" style="font-size:19px;margin-left:30px">每个 block 都把它那个 KV 头的 K、V 完整读一遍（2 × 512 KB）</p>
+    </div>
+    <div id="naive-bars" style="margin-top:14px"></div>
+    <div class="frag" data-step="4" style="margin-top:6px">
+      <p style="font-size:20px">同一份 K/V 被 <b>group × S = 4096</b> 个 block 各读一次。主要压在 L2 上，但依然是 <b class="red">13.9 ms</b>。
+        <br>目标：<span class="green">一次读进来的 K/V 块，尽量多的 query 一起用。</span></p>
+    </div>
+  </section>
+
+  <!-- 6. 布局 -->
+  <section class="slide" id="s-layout">
+    <h2>关键观察：同组的 Q 行在内存里是连续的 <small>示意 S = 100, B<sub>r</sub> = 64</small></h2>
+    <p style="font-size:20px">Q、O 的形状是 [H<sub>q</sub>, S, d]，按行展开：</p>
+    <div style="margin-top:14px;position:relative;width:1000px">
+      <div class="strip" id="lay-strip"></div>
+      <div style="position:relative;height:36px" id="lay-brk"></div>
+      <div class="blocks" id="lay-blocks"></div>
+    </div>
+    <div class="calc" id="lay-calc" style="margin-top:14px;min-height:118px"></div>
+  </section>
+
+  <!-- 7. 利用率 -->
+  <section class="slide" id="s-util">
+    <h2>拼起来的好处：S 小时不浪费 <small>group = 4, B<sub>r</sub> = 64</small></h2>
+    <div class="row" style="gap:70px">
+      <div>
+        <p style="font-size:20px">按头切块（每个头单独补齐到 64 行）</p>
+        <div class="ublocks" id="u-head" style="margin-top:10px"></div>
+        <div class="muted num" id="u-head-t" style="font-size:16px;margin-top:8px"></div>
+      </div>
+      <div>
+        <p style="font-size:20px">同组拼成 M = group·S 行再切</p>
+        <div class="ublocks" id="u-merge" style="margin-top:10px"></div>
+        <div class="muted num" id="u-merge-t" style="font-size:16px;margin-top:8px"></div>
+      </div>
+    </div>
+    <div id="u-note" style="margin-top:16px"></div>
+  </section>
+
+  <!-- 8. grid -->
+  <section class="slide" id="s-grid">
+    <h2>Grid：(M / B<sub>r</sub>, H<sub>kv</sub>) = (64, 8) <small>blockIdx.x 变化最快</small></h2>
+    <div class="row" style="gap:0">
+      <div class="ylab"></div>
+      <div class="bgrid" id="bgrid"></div>
+    </div>
+    <div class="mlabel muted" style="font-size:15px;margin:6px 0 0 50px">blockIdx.x →（每格 64 行 query）&nbsp;&nbsp; 纵轴：blockIdx.y = kv_head</div>
+    <div class="calc" id="grid-calc" style="margin-top:16px;min-height:110px"></div>
+  </section>
+
+  <!-- 9. 代码 -->
+  <section class="slide" id="s-code">
+    <h2>对应 gqa.cu</h2>
+<pre><span class="h0" id="gl-0"><span class="c">// host：每个 KV 头一行 block，M = group·S 行 query</span>
+<span class="t">int</span> group = num_q_heads / num_kv_heads;
+<span class="t">int</span> M = group * S;
+<span class="t">dim3</span> grid((M + BR - 1) / BR, num_kv_heads);</span>
+
+<span class="h0" id="gl-1"><span class="c">// device：只用 kv_head 定位，不需要算 q_head</span>
+<span class="k">const int</span> kv_head = blockIdx.y;
+<span class="k">const int</span> row0 = blockIdx.x * BR;              <span class="c">// 可能跨越两个 Q 头</span>
+<span class="k">const float</span> *q_base = Q + size_t(kv_head) * M * d;   <span class="c">// 同组 Q 头连续</span>
+<span class="k">float</span>       *o_base = O + size_t(kv_head) * M * d;</span>
+<span class="h0" id="gl-2"><span class="k">const float</span> *k_base = K + size_t(kv_head) * S * d;   <span class="c">// 整个 block 共用</span>
+<span class="k">const float</span> *v_base = V + size_t(kv_head) * S * d;</span>
+
+<span class="h0" id="gl-3"><span class="c">// 之后就是普通的 FlashAttention：BR 行 query × 逐块扫描 K/V</span>
+<span class="k">for</span> (key0 = 0; key0 &lt; S; key0 += BC) { ... }    <span class="c">// 见 flash_attention.html</span></span></pre>
+  </section>
+
+  <!-- 10. 结果 -->
+  <section class="slide" id="s-res">
+    <h2>效果 <small>A800，H<sub>q</sub> = 32, H<sub>kv</sub> = 8, S = 1024, d = 128，fp32</small></h2>
+    <div class="row" style="gap:70px;align-items:flex-end">
+      <div class="cmp">
+        <div class="col"><div class="muted" id="r-old-t"></div><div class="colbar" id="r-old" style="background:var(--red)"></div><div>原版<br><span class="muted" style="font-size:15px">1 block / query</span></div></div>
+        <div class="col"><div class="muted" id="r-new-t"></div><div class="colbar" id="r-new" style="background:var(--green)"></div><div>按组拼行<br><span class="muted" style="font-size:15px">+ Flash 分块</span></div></div>
+      </div>
+      <div style="flex:1">
+        <p class="frag" data-step="1"><b class="green">9.7×</b>：13.86 ms → 1.43 ms，1.24 → 12.0 TFLOPS</p>
+        <p class="frag muted" data-step="2" style="font-size:19px;margin-top:10px">每个 K/V 块读进 shared memory 后被 64 行 query 复用，
+          K/V 的读取量从 32 GB 降到 512 MB；同一 KV 头的 block 同时在跑，这 1 MB K/V 基本都命中 L2。</p>
+        <p class="frag muted" data-step="3" style="font-size:19px;margin-top:10px">误差 ~1e-6（题目容差 1e-4）。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11. 总结 -->
+  <section class="slide" id="s-sum">
+    <h2>总结</h2>
+    <ul style="margin-left:28px">
+      <li class="frag" data-step="1">GQA：group 个 Q 头共用一组 K/V，KV cache 和解码带宽缩小 group 倍，质量接近 MHA</li>
+      <li class="frag" data-step="2">映射是连续分组 <span class="math">kv = h / group</span>（repeat_interleave），不是 h % H<sub>kv</sub></li>
+      <li class="frag" data-step="3">不要展开 K/V；[H<sub>q</sub>, S, d] 布局下同组 Q 行连续，直接当成 M = group·S 行的单头 attention</li>
+      <li class="frag" data-step="4">block 可以跨 Q 头，S 小时块更满；同一 KV 头的 block 相邻发射，K/V 留在 L2</li>
+      <li class="frag" data-step="5">block 内部就是 FlashAttention：分块 + online softmax</li>
+    </ul>
+    <p class="frag muted" data-step="6" style="margin-top:36px;font-size:18px">参考：Ainslie et al., “GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints”, 2023；
+      Shazeer, “Fast Transformer Decoding: One Write-Head is All You Need” (MQA), 2019</p>
+  </section>
+
+  <div id="progress"></div>
+</div>
+</div>
+<div id="nav">
+  <span id="pos"></span>
+  <button id="b-prev">←</button>
+  <button id="b-play">▶ 自动</button>
+  <button id="b-next">→</button>
+</div>
+
+<script>
+const ctrl = {};
+const HQ = 8;
+const W = 1136;
+const QCOL = ['#5b9dff', '#4f8be6', '#4479cc', '#3a68b3', '#b48cff', '#a07ae6', '#8c69cc', '#7958b3'];
+const KVCOL = ['#3ccf91', '#ffa94d', '#ff6b6b', '#5b9dff', '#b48cff', '#e6c84d', '#4dd0e1', '#f06292'];
+const qx = i => 90 + (W - 180) * i / (HQ - 1);
+
+// 画 8 个 Q 头和若干 KV 头，返回更新函数
+function headDiagram(hostId, svgId, qy, ky) {
+  const host = document.getElementById(hostId), svg = document.getElementById(svgId);
+  const qs = [...Array(HQ)].map((_, i) => {
+    const d = document.createElement('div');
+    d.className = 'hbox';
+    d.style.left = qx(i) + 'px';
+    d.style.top = qy + 'px';
+    d.textContent = 'Q' + i;
+    host.appendChild(d);
+    return d;
+  });
+  const kvs = [...Array(HQ)].map((_, i) => {
+    const d = document.createElement('div');
+    d.className = 'hbox kv';
+    d.style.top = ky + 'px';
+    d.innerHTML = `KV${i}`;
+    host.appendChild(d);
+    return d;
+  });
+  const lines = qs.map(() => {
+    const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    svg.appendChild(l);
+    return l;
+  });
+  ['Q 头', 'K/V 头'].forEach((t, i) => {
+    const l = document.createElement('div');
+    l.className = 'rowlabel';
+    l.style.top = (i ? ky + 20 : qy + 16) + 'px';
+    l.style.left = '-60px';
+    l.textContent = t;
+    host.appendChild(l);
+  });
+  // nkv 个 KV 头，连续分组；hi = 高亮的 Q 头（-1 表示无）
+  return (nkv, hi = -1, mapFn = h => Math.floor(h / (HQ / nkv))) => {
+    kvs.forEach((d, k) => {
+      const on = k < nkv;
+      const members = [...Array(HQ).keys()].filter(h => mapFn(h) === k);
+      const cx = members.length ? members.reduce((a, h) => a + qx(h), 0) / members.length : qx(k);
+      d.style.left = cx + 'px';
+      d.style.opacity = on ? 1 : 0;
+      // 连续分组时 KV 框横跨它的所有 Q 头，交错分组时保持单格宽度
+      const contiguous = members.length > 0 && members[members.length - 1] - members[0] + 1 === members.length;
+      const width = contiguous ? qx(members[members.length - 1]) - qx(members[0]) + 96 : 96;
+      d.style.width = width + 'px';
+      d.style.marginLeft = -width / 2 + 'px';
+      d.style.background = KVCOL[k] + '33';
+      d.style.borderColor = KVCOL[k];
+      d.classList.toggle('hi', hi >= 0 && mapFn(hi) === k);
+      d.classList.toggle('dim', hi >= 0 && mapFn(hi) !== k);
+    });
+    qs.forEach((d, h) => {
+      const k = mapFn(h);
+      d.style.background = KVCOL[k] + '22';
+      d.style.borderColor = KVCOL[k];
+      d.classList.toggle('hi', h === hi);
+      d.classList.toggle('dim', hi >= 0 && h !== hi);
+      const l = lines[h];
+      l.setAttribute('x1', qx(h)); l.setAttribute('y1', qy + 54);
+      l.setAttribute('x2', parseFloat(kvs[k].style.left)); l.setAttribute('y2', ky);
+      l.setAttribute('stroke', KVCOL[k]);
+      l.style.opacity = hi < 0 || h === hi ? 0.85 : 0.12;
+    });
+  };
+}
+
+// ---------- 三种变体 ----------
+(() => {
+  const draw = headDiagram('var-hd', 'var-svg', 20, 220);
+  const note = document.getElementById('var-note'), title = document.getElementById('var-title');
+  const cfg = [
+    [8, 'MHA：每个 Q 头有自己的 K/V', '<div class="note warn">H<sub>kv</sub> = H<sub>q</sub> = 8：表达力最强，KV cache 最大</div>'],
+    [1, 'MQA：所有 Q 头共用一组 K/V', '<div class="note bad">H<sub>kv</sub> = 1：KV cache 缩小 8 倍，但模型质量明显下降，训练也不稳定</div>'],
+    [2, 'GQA：折中，每 group 个 Q 头共用一组', '<div class="note ok">H<sub>kv</sub> = 2，group = H<sub>q</sub> / H<sub>kv</sub> = 4：KV cache 缩小 4 倍，质量接近 MHA。' +
+      '<br>MHA（group = 1）和 MQA（group = H<sub>q</sub>）都是它的特例。LLaMA-2 70B、LLaMA-3、Mistral 都用 GQA。</div>'],
+  ];
+  ctrl['s-variants'] = {
+    steps: 2,
+    render(k) {
+      const [nkv, t, n] = cfg[k];
+      draw(nkv);
+      title.innerHTML = t;
+      note.innerHTML = n;
+    },
+  };
+})();
+
+// ---------- KV cache ----------
+(() => {
+  const host = document.getElementById('cache-bars');
+  const per = h => 2 * 32 * h * 128 * 2; // bytes / token
+  const rows = [['MHA H<sub>kv</sub> = 32', 32, 'var(--red)'], ['GQA H<sub>kv</sub> = 8', 8, 'var(--green)'], ['MQA H<sub>kv</sub> = 1', 1, 'var(--purple)']];
+  const els = rows.map(([lab, h, col]) => {
+    const r = document.createElement('div');
+    r.className = 'hbar';
+    const kb = per(h) / 1024, gb = per(h) * 8192 / 2 ** 30;
+    r.innerHTML = `<div class="lab">${lab}</div><div class="track"><div class="fill" style="background:${col}"></div></div>` +
+      `<div class="val">${kb} KB/token<br><span class="muted" style="font-size:16px">8K 上下文：${gb >= 1 ? gb + ' GB' : gb * 1024 + ' MB'}</span></div>`;
+    host.appendChild(r);
+    return [r.querySelector('.fill'), r.querySelector('.val'), h];
+  });
+  ctrl['s-cache'] = {
+    steps: 4,
+    render(k) {
+      els.forEach(([f, v, h], i) => {
+        f.style.width = i < k ? Math.max(h / 32 * 100, 1.2) + '%' : '0';
+        v.style.opacity = i < k ? 1 : 0;
+      });
+    },
+  };
+})();
+
+// ---------- 映射 ----------
+(() => {
+  const draw = headDiagram('map-hd', 'map-svg', 10, 180);
+  const calc = document.getElementById('map-calc'), note = document.getElementById('map-note');
+  const G = 4;
+  ctrl['s-map'] = {
+    steps: HQ + 1,
+    render(k) {
+      if (k === 0) {
+        draw(2);
+        calc.innerHTML = '<span class="muted">逐个看每个 Q 头用哪组 K/V</span>';
+        note.innerHTML = '';
+      } else if (k <= HQ) {
+        const h = k - 1;
+        draw(2, h);
+        calc.innerHTML = `q_head = ${h}：kv_head = ${h} / ${G} = <b class="num" style="color:${KVCOL[Math.floor(h / G)]}">${Math.floor(h / G)}</b>`;
+        note.innerHTML = h === HQ - 1 ? '<div class="note ok">相邻的 group 个 Q 头共享同一组：Q0–Q3 → KV0，Q4–Q7 → KV1。等价于 K.repeat_interleave(group, dim=0)。</div>' : '';
+      } else {
+        draw(2, -1, h => h % 2);
+        calc.innerHTML = `<span class="red">错误写法</span>：kv_head = q_head % H<sub>kv</sub> → Q0、Q2、Q4、Q6 → KV0`;
+        note.innerHTML = '<div class="note bad">这对应 K.repeat(group)（交错分组），和参考实现的 repeat_interleave 不一致；' +
+          'H<sub>kv</sub> = 1 或 H<sub>kv</sub> = H<sub>q</sub> 时两者恰好相同，小用例测不出来。</div>';
+      }
+    },
+  };
+})();
+
+// ---------- 朴素做法的流量 ----------
+(() => {
+  const host = document.getElementById('naive-bars');
+  // K/V 读取量（字节），性能用例
+  const kvHead = 2 * 1024 * 128 * 4; // 1 MB
+  const rows = [
+    ['原版：每个 query 读一遍', 32 * 1024 * kvHead, 'var(--red)'],
+    ['按组拼行 + B<sub>r</sub> = 64', 8 * 64 * kvHead, 'var(--green)'],
+    ['理想：每个 KV 头只读一次', 8 * kvHead, 'var(--blue)'],
+  ];
+  const max = rows[0][1];
+  const fmt = b => (b >= 2 ** 30 ? b / 2 ** 30 + ' GB' : b / 2 ** 20 + ' MB');
+  const els = rows.map(([lab, b, col]) => {
+    const r = document.createElement('div');
+    r.className = 'hbar';
+    r.style.margin = '8px 0';
+    r.innerHTML = `<div class="lab" style="width:280px;font-size:18px">${lab}</div><div class="track" style="width:560px;height:30px">` +
+      `<div class="fill" style="background:${col}"></div></div><div class="val">${fmt(b)}</div>`;
+    host.appendChild(r);
+    return [r, r.querySelector('.fill'), b];
+  });
+  ctrl['s-naive'] = {
+    steps: 4,
+    render(k) {
+      els.forEach(([r, f, b], i) => {
+        const on = i === 0 ? k >= 3 : k >= 4;
+        r.style.opacity = on ? 1 : 0;
+        f.style.width = on ? Math.max(b / max * 100, 0.8) + '%' : '0';
+      });
+    },
+  };
+})();
+
+// ---------- 内存布局 ----------
+(() => {
+  const S = 100, G = 4, BR = 64, PX = 1000 / (HQ * S);
+  const strip = document.getElementById('lay-strip');
+  const segs = [...Array(HQ)].map((_, h) => {
+    const d = document.createElement('div');
+    d.className = 'seg';
+    d.style.width = S * PX + 'px';
+    d.style.background = QCOL[h] + '55';
+    d.innerHTML = `Q${h}`;
+    strip.appendChild(d);
+    return d;
+  });
+  const brkHost = document.getElementById('lay-brk');
+  const brks = [0, 1].map(g => {
+    const b = document.createElement('div');
+    b.className = 'brk';
+    b.style.left = g * G * S * PX + 4 + 'px';
+    b.style.width = G * S * PX - 8 + 'px';
+    b.style.borderColor = KVCOL[g];
+    brkHost.appendChild(b);
+    return b;
+  });
+  const blkHost = document.getElementById('lay-blocks');
+  const M = G * S, NB = Math.ceil(M / BR);
+  const blks = [];
+  for (let g = 0; g < 2; g++)
+    for (let b = 0; b < NB; b++) {
+      const r0 = b * BR, r1 = Math.min(M, r0 + BR);
+      const d = document.createElement('div');
+      d.className = 'blk';
+      d.style.left = (g * M + r0) * PX + 1 + 'px';
+      d.style.width = (r1 - r0) * PX - 2 + 'px';
+      d.textContent = `(${b},${g})`;
+      blkHost.appendChild(d);
+      blks.push({ d, g, b, r0, r1 });
+    }
+  const ticks = [1, 2, 3, 5, 6, 7].map(h => {
+    const t = document.createElement('div');
+    t.className = 'tick';
+    t.style.left = h * S * PX + 'px';
+    blkHost.appendChild(t);
+    return t;
+  });
+  const calc = document.getElementById('lay-calc');
+  const texts = [
+    '8 个 Q 头首尾相接，每个头 S = 100 行。',
+    `KV 头 g 对应 Q 头 g·4 … g·4+3 —— 恰好是<b>连续</b>的 4·S = ${M} 行，起点 Q + g·M·d。` +
+      '<br>对于 KV0 来说，这 400 行就是一个 “M = 400 行 query、S = 100 个 key” 的普通 attention。',
+    `直接按 B<sub>r</sub> = 64 切：每组 ⌈${M}/64⌉ = ${NB} 个 block，标号 (blockIdx.x, blockIdx.y = kv_head)。` +
+      '<br><span class="muted">不需要知道每一行属于哪个 Q 头 —— K/V 都一样。</span>',
+    'block (1,0) 覆盖第 64–127 行：前 36 行属于 Q0，后 28 行属于 Q1，<span class="orange">跨越了头的边界</span>，完全没问题。' +
+      '<br>输出 O 的布局相同，写回时也按同样的 row 索引。',
+  ];
+  ctrl['s-layout'] = {
+    steps: 3,
+    render(k) {
+      brks.forEach((b, g) => {
+        b.classList.toggle('on', k >= 1);
+        b.textContent = k >= 1 ? `KV${g} 的 M = ${M} 行` : '';
+      });
+      blks.forEach(x => {
+        x.d.classList.toggle('on', k >= 2);
+        x.d.classList.toggle('hi', k >= 3 && x.g === 0 && x.b === 1);
+      });
+      ticks.forEach(t => t.classList.toggle('on', k >= 3));
+      segs.forEach((s, h) => { s.style.opacity = k >= 1 && k < 3 ? 1 : (k >= 3 && h > 1 ? 0.45 : 1); });
+      calc.innerHTML = texts[k];
+    },
+  };
+})();
+
+// ---------- 利用率 ----------
+(() => {
+  const G = 4, BR = 64;
+  const sizes = [30, 1024];
+  const hHost = document.getElementById('u-head'), mHost = document.getElementById('u-merge');
+  const draw = (host, blocks) => {
+    host.innerHTML = blocks.map(parts => {
+      const used = parts.reduce((a, p) => a + p[1], 0);
+      return `<div class="ub"><div class="uf" style="height:${used / BR * 100}%">` +
+        parts.map(([h, n]) => `<div style="flex-grow:${n};background:${QCOL[h]}88"></div>`).join('') +
+        `</div><div class="pct">${Math.round(used / BR * 100)}%</div></div>`;
+    }).join('');
+  };
+  const note = document.getElementById('u-note');
+  const plan = S => {
+    // 按头：每个头单独切
+    const head = [];
+    for (let h = 0; h < G; h++)
+      for (let r = 0; r < S; r += BR) head.push([[h, Math.min(BR, S - r)]]);
+    // 拼行
+    const merged = [], M = G * S;
+    for (let r0 = 0; r0 < M; r0 += BR) {
+      const parts = [];
+      for (let r = r0; r < Math.min(M, r0 + BR);) {
+        const h = Math.floor(r / S), end = Math.min((h + 1) * S, r0 + BR, M);
+        parts.push([h, end - r]);
+        r = end;
+      }
+      merged.push(parts);
+    }
+    return { head, merged };
+  };
+  ctrl['s-util'] = {
+    steps: 2,
+    render(k) {
+      const S = sizes[k >= 2 ? 1 : 0];
+      const { head, merged } = plan(S);
+      const show = (arr, host, tid) => {
+        const shown = arr.length > 8 ? arr.slice(0, 8) : arr;
+        draw(host, shown);
+        const kvReads = arr.length;
+        document.getElementById(tid).innerHTML =
+          `${arr.length} 个 block / KV 头${arr.length > 8 ? '（只画前 8 个）' : ''}<br>K/V 被读 ${kvReads} 遍`;
+      };
+      show(head, hHost, 'u-head-t');
+      show(merged, mHost, 'u-merge-t');
+      if (k === 0) note.innerHTML = `<p style="font-size:20px">S = ${S}（官方功能用例里就有）：同一个 KV 头下 4 个 Q 头，每头只有 30 行。</p>`;
+      else if (k === 1) note.innerHTML = '<div class="note ok">拼行后 2 个 block 就装下 120 行，平均利用率 47% → 94%，K/V 读取次数减半，launch 的 block 也减半。</div>';
+      else note.innerHTML = '<div class="note warn">S = 1024 是 64 的倍数时两种切法完全一样 —— 性能用例上的提速来自 Flash 分块本身。' +
+        '<br>拼行的价值在于：索引更简单（只用 kv_head），S 不整除 B<sub>r</sub> 或 S 很小（例如解码时每个头只有 1 个 query）时块依然是满的。</div>';
+    },
+  };
+})();
+
+// ---------- grid ----------
+(() => {
+  const host = document.getElementById('bgrid');
+  const NX = 64, NY = 8, WAVE = 216; // A800：108 SM × 2 block/SM（受 56 KB shared memory 限制）
+  const cells = [];
+  for (let y = 0; y < NY; y++)
+    for (let x = 0; x < NX; x++) {
+      const d = document.createElement('div');
+      d.className = 'bc';
+      host.appendChild(d);
+      cells.push(d);
+    }
+  document.querySelector('#s-grid .ylab').innerHTML = [...Array(NY)].map((_, y) => `<div>kv${y}</div>`).join('');
+  const calc = document.getElementById('grid-calc');
+  const texts = [
+    '共 64 × 8 = 512 个 block。线性编号 = blockIdx.y · 64 + blockIdx.x，硬件大致按这个顺序发射。',
+    `A800：108 个 SM，每个 SM 放得下 2 个 block（56 KB shared memory）→ 第一波约 ${WAVE} 个 block，` +
+      '<span class="blue">覆盖 kv0–kv3</span>。<br>同时在跑的 block 只涉及 4 个 KV 头 = 4 MB 的 K/V，远小于 40 MB 的 L2 → 反复读也基本命中 L2。',
+    '第二波 <span class="purple">kv3–kv6</span>：前一波读过的 K/V 已经用完，换下一批。',
+    '第三波 <span class="orange">kv6–kv7</span>（不满一波）。<br><span class="muted">如果把 grid 写成 (H<sub>kv</sub>, M/B<sub>r</sub>)，同时在跑的 block 会散到全部 8 个 KV 头上，L2 局部性变差。</span>',
+  ];
+  ctrl['s-grid'] = {
+    steps: 3,
+    render(k) {
+      cells.forEach((c, i) => {
+        const w = Math.floor(i / WAVE) + 1;
+        let cls = 'bc';
+        if (k >= 1 && w === k) cls += ' w' + w;
+        else if (k >= 1 && w < k) cls += ' done';
+        c.className = cls;
+      });
+      calc.innerHTML = texts[k];
+    },
+  };
+})();
+
+// ---------- 代码高亮 ----------
+ctrl['s-code'] = {
+  steps: 4,
+  render(k) {
+    for (let i = 0; i < 4; i++)
+      document.getElementById('gl-' + i).style.background = k === i + 1 ? 'rgba(255,169,77,.16)' : '';
+  },
+};
+
+// ---------- 结果 ----------
+ctrl['s-res'] = {
+  steps: 3,
+  render(k) {
+    const on = k >= 1;
+    document.getElementById('r-old').style.height = (on ? 200 : 0) + 'px';
+    document.getElementById('r-new').style.height = (on ? 200 * 1.433 / 13.864 : 0) + 'px';
+    document.getElementById('r-old-t').textContent = on ? '13.86 ms' : '';
+    document.getElementById('r-new-t').textContent = on ? '1.43 ms' : '';
+  },
+};
+
+// ---------- 导航 ----------
+const slides = [...document.querySelectorAll('.slide')];
+let si = 0, step = 0, timer = null;
+const stepsOf = s => Math.max(
+  ...[...s.querySelectorAll('.frag')].map(f => +f.dataset.step), ctrl[s.id] ? ctrl[s.id].steps : 0, 0);
+
+function show() {
+  slides.forEach((s, i) => s.classList.toggle('active', i === si));
+  const s = slides[si];
+  s.querySelectorAll('.frag').forEach(f => f.classList.toggle('on', +f.dataset.step <= step));
+  if (ctrl[s.id]) ctrl[s.id].render(step);
+  document.getElementById('pos').textContent = `${si + 1} / ${slides.length}` + (stepsOf(s) ? ` · 步骤 ${step}/${stepsOf(s)}` : '');
+  document.getElementById('progress').style.width = ((si + 1) / slides.length * 100) + '%';
+  location.hash = si + 1;
+}
+function next() {
+  if (step < stepsOf(slides[si])) step++;
+  else if (si < slides.length - 1) { si++; step = 0; }
+  else stopPlay();
+  show();
+}
+function prev() {
+  if (step > 0) step--;
+  else if (si > 0) { si--; step = stepsOf(slides[si]); }
+  show();
+}
+function stopPlay() { clearInterval(timer); timer = null; document.getElementById('b-play').textContent = '▶ 自动'; }
+function togglePlay() {
+  if (timer) return stopPlay();
+  timer = setInterval(next, 2200);
+  document.getElementById('b-play').textContent = '⏸ 暂停';
+}
+document.addEventListener('keydown', e => {
+  if (['ArrowRight', ' ', 'PageDown', 'Enter'].includes(e.key)) { e.preventDefault(); next(); }
+  else if (['ArrowLeft', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); prev(); }
+  else if (e.key === 'p' || e.key === 'P') togglePlay();
+  else if (e.key === 'f' || e.key === 'F') {
+    document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  } else if (e.key === 'Home') { si = 0; step = 0; show(); }
+});
+document.getElementById('stage').addEventListener('click', e => { if (!e.target.closest('#nav')) next(); });
+document.getElementById('b-next').onclick = next;
+document.getElementById('b-prev').onclick = prev;
+document.getElementById('b-play').onclick = togglePlay;
+
+function fit() {
+  const s = Math.min(innerWidth / 1280, (innerHeight - 40) / 720);
+  document.getElementById('stage').style.transform = `scale(${s})`;
+}
+addEventListener('resize', fit);
+fit();
+const h = parseInt(location.hash.slice(1), 10);
+if (h >= 1 && h <= slides.length) si = h - 1;
+show();
+</script>
+</body>
+</html>
