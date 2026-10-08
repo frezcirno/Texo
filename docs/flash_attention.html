@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>FlashAttention 原理</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171e2e;
+    --line: #2a3550;
+    --text: #e6e9f0;
+    --muted: #8a94ab;
+    --blue: #5b9dff;
+    --green: #3ccf91;
+    --orange: #ffa94d;
+    --red: #ff6b6b;
+    --purple: #b48cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #070a10; color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; overflow: hidden; }
+  #viewport { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #stage { width: 1280px; height: 720px; position: relative; background: var(--bg);
+    border-radius: 12px; overflow: hidden; transform-origin: center center; box-shadow: 0 0 60px #000; }
+  .slide { position: absolute; inset: 0; padding: 56px 72px; opacity: 0; pointer-events: none;
+    transition: opacity .45s ease; }
+  .slide.active { opacity: 1; pointer-events: auto; }
+  h1 { font-size: 56px; font-weight: 700; letter-spacing: 1px; }
+  h2 { font-size: 34px; font-weight: 650; margin-bottom: 28px; }
+  h2 small { font-size: 18px; color: var(--muted); font-weight: 400; margin-left: 12px; }
+  p, li { font-size: 22px; line-height: 1.7; }
+  .muted { color: var(--muted); }
+  .blue { color: var(--blue); } .green { color: var(--green); } .orange { color: var(--orange); }
+  .red { color: var(--red); } .purple { color: var(--purple); }
+  .math { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; font-size: 26px; }
+  .formula { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 24px; display: inline-block; font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif;
+    font-size: 26px; }
+  sub, sup { font-size: 62%; }
+  code, pre { font-family: "JetBrains Mono", "Fira Code", Consolas, monospace; }
+  .frag { opacity: 0; transform: translateY(12px); transition: opacity .45s, transform .45s; }
+  .frag.on { opacity: 1; transform: none; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 24px; }
+  .row { display: flex; gap: 24px; align-items: flex-start; }
+
+  /* title */
+  #s-title { display: flex; flex-direction: column; justify-content: center; }
+  #s-title .sub { font-size: 26px; color: var(--muted); margin-top: 18px; }
+  #s-title .hint { position: absolute; bottom: 48px; font-size: 18px; color: var(--muted); }
+
+  /* pass rows (standard attention traffic) */
+  .pass { display: flex; align-items: center; gap: 18px; margin: 14px 0; }
+  .pass .label { width: 330px; font-size: 20px; }
+  .pass .io { font-size: 18px; width: 300px; font-family: Consolas, monospace; }
+  .hbm { position: relative; width: 300px; height: 44px; border-radius: 8px; background: #212a3f;
+    border: 1px solid var(--line); overflow: hidden; }
+  .hbm .fillbar { position: absolute; left: 0; top: 0; bottom: 0; width: 0; transition: width 1.2s linear; }
+  .hbm .fillbar.r { background: linear-gradient(90deg, rgba(91,157,255,.15), rgba(91,157,255,.55)); }
+  .hbm .fillbar.w { background: linear-gradient(90deg, rgba(255,107,107,.15), rgba(255,107,107,.55)); }
+  .hbm span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-family: Consolas, monospace; }
+  .total { font-size: 26px; margin-top: 20px; }
+
+  /* matrices */
+  .mat { display: grid; gap: 3px; }
+  .mc { width: 30px; height: 30px; border-radius: 5px; background: #212a3f; border: 1px solid var(--line);
+    transition: background .35s, border-color .35s, opacity .35s, transform .35s; }
+  .mc.q-on { background: #1d3350; border-color: var(--blue); }
+  .mc.k-on { background: #1d4535; border-color: var(--green); }
+  .mc.v-on { background: #3a2d5c; border-color: var(--purple); }
+  .mc.s-cur { background: #5a3a14; border-color: var(--orange); transform: scale(1.08); }
+  .mc.s-gone { background: transparent; border: 1px dashed #3a4566; }
+  .mc.o-part { border-color: var(--blue); }
+  .mc.o-done { background: var(--blue); border-color: var(--blue); }
+  .mlabel { font-size: 18px; color: var(--muted); text-align: center; margin: 6px 0; font-family: Consolas, monospace; }
+  .tilegrid { display: grid; grid-template-columns: 140px 280px 140px 140px; grid-template-rows: auto auto;
+    column-gap: 26px; row-gap: 4px; align-items: end; }
+  .sram { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; }
+  .sram h4 { font-size: 18px; margin-bottom: 8px; }
+  .chip { display: inline-block; padding: 3px 10px; margin: 3px 4px 3px 0; border-radius: 6px; font-size: 16px;
+    font-family: Consolas, monospace; border: 1px solid var(--line); opacity: .25; transition: opacity .3s; }
+  .chip.on { opacity: 1; }
+  .chip.q { border-color: var(--blue); color: var(--blue); }
+  .chip.k { border-color: var(--green); color: var(--green); }
+  .chip.v { border-color: var(--purple); color: var(--purple); }
+  .chip.s { border-color: var(--orange); color: var(--orange); }
+  .chip.o { border-color: var(--blue); color: var(--text); }
+
+  /* numeric walk */
+  .cells { display: flex; gap: 6px; }
+  .cell { width: 60px; height: 50px; border-radius: 8px; background: #212a3f; border: 1px solid var(--line);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 20px;
+    font-family: Consolas, monospace; transition: background .35s, border-color .35s, transform .35s; }
+  .cell small { font-size: 12px; color: var(--muted); }
+  .cell.done { background: #1d3350; border-color: var(--blue); }
+  .cell.cur { background: #2f5d3f; border-color: var(--green); transform: translateY(-6px); }
+  .cell.newmax { background: #5a3a14; border-color: var(--orange); transform: translateY(-6px); }
+  .cells .gap { width: 12px; }
+  .bars { position: relative; height: 170px; display: flex; align-items: flex-end; gap: 6px;
+    border-bottom: 2px solid var(--line); padding-top: 10px; }
+  .bars .ref { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--muted); opacity: .5; }
+  .bars .ref span { position: absolute; right: 0; top: -22px; font-size: 14px; color: var(--muted); }
+  .bars .gap { width: 12px; }
+  .bar { width: 60px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+  .bar .fill { width: 100%; border-radius: 6px 6px 0 0; background: var(--blue);
+    transition: height .7s cubic-bezier(.3,.7,.2,1), background .4s; }
+  .bar .fill.fresh { background: var(--green); }
+  .bar .fill.scaled { background: var(--orange); }
+  .bar .fill.ghost { background: transparent; }
+  .bar .v { font-size: 13px; color: var(--muted); margin-bottom: 4px; font-family: Consolas, monospace; height: 16px; }
+  .state { display: flex; gap: 14px; }
+  .state .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px;
+    min-width: 120px; transition: border-color .3s, box-shadow .3s; }
+  .state .box .k { font-size: 15px; color: var(--muted); }
+  .state .box .val { font-size: 24px; font-family: Consolas, monospace; white-space: nowrap; }
+  .state .box.flash { border-color: var(--orange); box-shadow: 0 0 18px rgba(255,169,77,.35); }
+  .calc { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; font-size: 19px; line-height: 1.7;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; min-height: 150px; }
+  .calc .num { font-family: Consolas, monospace; font-size: 18px; }
+  .note { font-size: 18px; padding: 10px 16px; border-radius: 8px; margin-top: 12px; }
+  .note.warn { background: rgba(255,169,77,.12); border: 1px solid rgba(255,169,77,.5); color: #ffd3a1; }
+  .note.ok { background: rgba(60,207,145,.12); border: 1px solid rgba(60,207,145,.5); color: #a9f0cf; }
+  .vtab { font-family: Consolas, monospace; font-size: 15px; color: var(--muted); margin-top: 6px; display: flex; gap: 6px; }
+  .vtab div { width: 60px; text-align: center; }
+  .vtab .gap { width: 12px; }
+
+  /* GQA grouping */
+  .heads { display: flex; gap: 10px; align-items: flex-end; }
+  .head { width: 92px; border-radius: 8px; border: 1px solid var(--line); background: #212a3f; text-align: center;
+    font-size: 15px; font-family: Consolas, monospace; padding: 6px 0; transition: background .35s, border-color .35s; }
+  .head.qh { height: 150px; display: flex; flex-direction: column; }
+  .head.qh .blk { flex: 1; border-top: 1px dashed #3a4566; display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: var(--muted); transition: background .35s; }
+  .head.qh .blk.on { background: rgba(91,157,255,.28); color: var(--text); }
+  .head.on { border-color: var(--blue); }
+  .head.kv { height: 70px; display: flex; align-items: center; justify-content: center; }
+  .head.kv.on { border-color: var(--green); background: #1d4535; }
+
+  /* block mapping */
+  .tgrid { display: grid; grid-template-columns: repeat(8, 26px); gap: 3px; }
+  .tcell { width: 26px; height: 18px; border-radius: 3px; background: #212a3f; border: 1px solid var(--line);
+    transition: background .35s, border-color .35s; }
+  .tcell.w0 { background: rgba(91,157,255,.35); border-color: var(--blue); }
+  .tcell.row { background: rgba(255,169,77,.55); border-color: var(--orange); }
+  .smem { display: flex; height: 46px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); width: 520px; }
+  .smem div { display: flex; align-items: center; justify-content: center; font-size: 15px; font-family: Consolas, monospace; }
+  .timeline { display: flex; gap: 6px; flex-wrap: nowrap; }
+  .tl { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); font-size: 15px;
+    text-align: center; line-height: 1.35; opacity: .2; transition: opacity .35s, border-color .35s; }
+  .tl.on { opacity: 1; }
+  .tl.sync { background: transparent; border-style: dashed; color: var(--muted); font-size: 13px; padding: 8px 6px; }
+  .tl.cur { border-color: var(--orange); box-shadow: 0 0 14px rgba(255,169,77,.3); }
+
+  /* results */
+  .cmp { display: flex; gap: 50px; align-items: flex-end; height: 240px; }
+  .cmp .col { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 18px; }
+  .cmp .colbar { width: 120px; border-radius: 8px 8px 0 0; transition: height 1s cubic-bezier(.3,.7,.2,1); height: 0; }
+
+  pre { background: #0b1019; border: 1px solid var(--line); border-radius: 10px; padding: 14px 20px;
+    font-size: 16px; line-height: 1.5; color: #cdd5e5; }
+  pre .c { color: #6a7794; } pre .k { color: #c792ea; } pre .t { color: #82aaff; }
+  pre .h { background: rgba(255,169,77,.16); display: inline-block; width: 100%; transition: background .3s; }
+  pre .h0 { display: inline-block; width: 100%; transition: background .3s; }
+
+  /* nav */
+  #nav { position: fixed; bottom: 14px; right: 18px; display: flex; gap: 8px; align-items: center; z-index: 10;
+    font-size: 14px; color: var(--muted); }
+  #nav button { background: #1b2336; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 12px; cursor: pointer; font-size: 14px; }
+  #nav button:hover { border-color: var(--blue); }
+  #progress { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--blue); transition: width .4s; }
+</style>
+</head>
+<body>
+<div id="viewport">
+<div id="stage">
+
+  <!-- 1. 标题 -->
+  <section class="slide" id="s-title">
+    <h1>FlashAttention</h1>
+    <div class="sub">分块 + online softmax：不把 N×N 注意力矩阵写回显存</div>
+    <div class="sub" style="font-size:20px;margin-top:40px">
+      <span class="blue">精确计算，不是近似</span> · <span class="green">显存占用 O(N)</span> · <span class="orange">中间结果只留在片上</span>
+    </div>
+    <div class="sub" style="font-size:18px;margin-top:14px">前置：online_softmax.html 里的 (m, d) 递推</div>
+    <div class="hint">→ / 空格：下一步 &nbsp;·&nbsp; ←：上一步 &nbsp;·&nbsp; P：自动播放 &nbsp;·&nbsp; F：全屏</div>
+  </section>
+
+  <!-- 2. 标准做法 -->
+  <section class="slide" id="s-naive">
+    <h2>标准 Attention：三个 kernel <small>O = softmax(QK<sup>T</sup> / √d) · V</small></h2>
+    <div id="naive-passes"></div>
+    <div class="total frag" data-step="3">
+      N×N 中间矩阵在显存里 <b class="red">写 2 次、读 2 次</b>
+    </div>
+    <div class="frag" data-step="4" style="margin-top:14px">
+      <p class="muted">以 LeetGPU 性能用例为例：32 个头 × 1024 × 1024 × 4 B = <b class="red">128 MB</b> 的 S，再加同样大小的 P；
+        而 Q、K、V、O 加起来才 <b class="green">40 MB</b>。<br>N 翻倍，中间矩阵就翻 4 倍：带宽和显存都扛不住。</p>
+    </div>
+  </section>
+
+  <!-- 3. 推导 -->
+  <section class="slide" id="s-derive">
+    <h2>从 online softmax 到 online attention</h2>
+    <p>对某一行 query：分数 s<sub>j</sub> = q·k<sub>j</sub> / √d，输出</p>
+    <div class="formula" style="margin-top:8px">o = Σ<sub>j</sub> e<sup>s<sub>j</sub> − m</sup> v<sub>j</sub> &nbsp;/&nbsp; Σ<sub>j</sub> e<sup>s<sub>j</sub> − m</sup></div>
+    <div class="frag" data-step="1" style="margin-top:22px">
+      <p>分子也是 “以 m 为基准的指数加权和”，和分母一样，<span class="orange">换基准时只要乘修正因子</span>。
+        所以在 (m, ℓ) 之外再维护一个<b>未归一化</b>的输出累加器 <span class="blue">õ</span>：</p>
+    </div>
+    <div class="frag" data-step="2" style="margin-top:14px">
+      <div class="formula" style="border-color:var(--green);line-height:1.6">
+        m′ = max(m, max<sub>j∈tile</sub> s<sub>j</sub>) &nbsp;&nbsp; <span class="orange">α = e<sup>m − m′</sup></span><br>
+        p<sub>j</sub> = e<sup>s<sub>j</sub> − m′</sup> &nbsp;&nbsp;
+        ℓ′ = ℓ · <span class="orange">α</span> + Σ<sub>j</sub> p<sub>j</sub> &nbsp;&nbsp;
+        <span class="blue">õ′ = õ · <span class="orange">α</span> + Σ<sub>j</sub> p<sub>j</sub> v<sub>j</sub></span>
+      </div>
+    </div>
+    <div class="frag" data-step="3" style="margin-top:14px">
+      <p>一次处理<b>一整块 key</b>（tile），全部扫完后 <span class="math">o = õ / ℓ</span>。
+        初值 m = −∞，ℓ = 0，õ = 0。<span class="muted">每块的 p 用完即弃，不需要保存。</span></p>
+    </div>
+  </section>
+
+  <!-- 4. 数值演示 -->
+  <section class="slide" id="s-walk">
+    <h2>逐块演示 <small>1 行 query，8 个 key，每块 2 个，v<sub>j</sub> ∈ ℝ<sup>2</sup></small></h2>
+    <div class="row" style="gap:36px">
+      <div>
+        <div class="cells" id="walk-cells"></div>
+        <div style="height:16px"></div>
+        <div class="bars" id="walk-bars"><div class="ref" style="bottom:130px"><span>1.0</span></div></div>
+        <div class="vtab" id="walk-v"></div>
+        <p class="muted" style="font-size:16px;margin-top:8px">上：分数 s<sub>j</sub> &nbsp;柱：e<sup>s<sub>j</sub> − m</sup>（当前基准） &nbsp;下：v<sub>j</sub></p>
+      </div>
+      <div style="flex:1">
+        <div class="state">
+          <div class="box" id="walk-mbox"><div class="k">m</div><div class="val orange" id="walk-m">−∞</div></div>
+          <div class="box" id="walk-lbox"><div class="k">ℓ</div><div class="val blue" id="walk-l">0</div></div>
+          <div class="box" id="walk-obox"><div class="k">õ（未归一化）</div><div class="val purple" id="walk-o">(0, 0)</div></div>
+        </div>
+        <div class="calc" id="walk-calc" style="margin-top:14px"></div>
+        <div id="walk-note"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. 分块动画 -->
+  <section class="slide" id="s-tile">
+    <h2>分块：S 每次只存在一块 <small>N = 8, d = 4, B<sub>r</sub> = 4, B<sub>c</sub> = 2</small></h2>
+    <div class="row" style="gap:34px">
+      <div class="tilegrid">
+        <div></div>
+        <div><div class="mlabel">K<sup>T</sup> (d × N)</div><div class="mat" id="m-kt"></div></div>
+        <div></div><div></div>
+        <div><div class="mat" id="m-q"></div><div class="mlabel">Q (N × d)</div></div>
+        <div><div class="mat" id="m-s"></div><div class="mlabel">S = QK<sup>T</sup> (N × N)</div></div>
+        <div><div class="mat" id="m-v"></div><div class="mlabel">V (N × d)</div></div>
+        <div><div class="mat" id="m-o"></div><div class="mlabel">O (N × d)</div></div>
+      </div>
+      <div style="flex:1">
+        <div class="sram">
+          <h4>片上 SRAM（shared memory / 寄存器）</h4>
+          <span class="chip q" id="c-q">Q<sub>i</sub></span><span class="chip k" id="c-k">K<sub>j</sub></span><span class="chip v" id="c-v">V<sub>j</sub></span><br>
+          <span class="chip s" id="c-s">S<sub>ij</sub>, P<sub>ij</sub></span><span class="chip o" id="c-o">m, ℓ, õ<sub>i</sub></span>
+        </div>
+        <div class="calc" id="tile-calc" style="margin-top:14px;min-height:190px;font-size:19px"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. 并行与 GQA -->
+  <section class="slide" id="s-gqa">
+    <h2>并行方式：每个 block 一块 Q <small>对应 gqa.cu</small></h2>
+    <p class="frag" data-step="1">外层按 Q 块切给不同 thread block，彼此独立；内层每个 block 自己扫完所有 K/V 块（FlashAttention-2 的循环顺序）。</p>
+    <div class="row frag" data-step="2" style="margin-top:20px;gap:60px;align-items:flex-end">
+      <div>
+        <div class="heads" id="gqa-q"></div>
+        <div class="mlabel" style="text-align:left">Q 头 h<sub>0</sub>…h<sub>7</sub>（每头 S 行）</div>
+        <div class="heads" id="gqa-kv" style="margin-top:12px"></div>
+        <div class="mlabel" style="text-align:left">KV 头（group = 4）</div>
+      </div>
+      <div style="flex:1" id="gqa-note"></div>
+    </div>
+  </section>
+
+  <!-- 7. block 内映射 -->
+  <section class="slide" id="s-block">
+    <h2>Block 内部 <small>d = 128：B<sub>r</sub> = 64, B<sub>c</sub> = 32, 128 线程</small></h2>
+    <div class="row" style="gap:44px">
+      <div>
+        <div class="tgrid" id="tgrid"></div>
+        <div class="mlabel" style="text-align:left;font-size:15px;margin-top:8px">16 × 8 线程，每个负责 4 行 query<br>
+          <span class="blue">■</span> warp 0 &nbsp;<span class="orange">■</span> 同一行组的 8 个 lane</div>
+      </div>
+      <div style="flex:1">
+        <div class="frag" data-step="1">
+          <p style="font-size:19px">每个线程：S 块里 <b>4 行 × 4 列</b>，O 里 <b>4 行 × 16 列</b>，全在寄存器。
+            同一行的 8 个线程是 warp 里相邻的 lane → 行最大值、行和用 <code>__shfl_xor_sync</code>，不经过 shared memory。</p>
+        </div>
+        <div class="frag" data-step="2" style="margin-top:14px">
+          <div class="smem">
+            <div style="width:57%;background:rgba(91,157,255,.3)">Q<sup>T</sup> 32 KB</div>
+            <div style="width:29%;background:rgba(60,207,145,.3)">K/V 16 KB</div>
+            <div style="width:14%;background:rgba(255,169,77,.3)">P<sup>T</sup> 8K</div>
+          </div>
+          <p class="muted" style="font-size:16px;margin-top:6px">K 和 V 分时复用同一块 → 56 KB，T4 的 64 KB 也放得下。Q 预乘 log<sub>2</sub>e/√d，之后全用 exp2f。</p>
+        </div>
+        <div class="frag" data-step="3" style="margin-top:16px">
+          <div class="timeline" id="tl"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8. 代码 -->
+  <section class="slide" id="s-code">
+    <h2>代码骨架 <small>每个线程的视角</small></h2>
+<pre><span class="t">float</span> m[4] = {-INF}, l[4] = {0}, acc[4][D/8] = {0};   <span class="c">// 4 行的状态</span>
+<span class="k">for</span> (key0 = 0; key0 &lt; S; key0 += BC) {
+<span class="h0" id="cl-0">  load_K_tile(); __syncthreads();
+  s[4][4] = Q_tile · K_tile<sup>T</sup>;                        <span class="c">// 寄存器分块</span></span>
+<span class="h0" id="cl-1">  tile_max = shfl_max(row_max(s));                  <span class="c">// 8 个 lane 归约</span>
+  m_new = fmaxf(m, tile_max);  alpha = exp2f(m - m_new);
+  p = exp2f(s - m_new);
+  l = l * alpha + rowsum(p);                        <span class="c">// 线程内部分和，最后再归约</span></span>
+<span class="h0" id="cl-2">  store P to smem; __syncthreads();
+  load_V_tile(); __syncthreads();
+  acc = acc * alpha + P · V_tile;                   <span class="c">// 同一个 alpha</span>
+  __syncthreads();</span>
+}
+<span class="h0" id="cl-3">out = acc / shfl_sum(l);                            <span class="c">// 最后统一归一化</span></span></pre>
+  </section>
+
+  <!-- 9. 结果 -->
+  <section class="slide" id="s-res">
+    <h2>效果 <small>A800，Hq = 32, Hkv = 8, N = 1024, d = 128，fp32</small></h2>
+    <div class="row" style="gap:70px;align-items:flex-end">
+      <div class="cmp">
+        <div class="col"><div class="muted" id="r-old-t"></div><div class="colbar" id="r-old" style="background:var(--red)"></div><div>原版<br><span class="muted" style="font-size:15px">1 block / query</span></div></div>
+        <div class="col"><div class="muted" id="r-new-t"></div><div class="colbar" id="r-new" style="background:var(--green)"></div><div>Flash 分块</div></div>
+      </div>
+      <div style="flex:1">
+        <p class="frag" data-step="1"><b class="green">9.7×</b> 加速：1.24 → 12.0 TFLOPS（约 60% fp32 峰值）</p>
+        <p class="frag muted" data-step="2" style="font-size:19px;margin-top:10px">原版每个 block 只算 1 个 query，却要把整份 K/V 读一遍，
+          softmax 还由单线程串行。分块后每个 K/V 块被 64 行 query 复用，softmax 在寄存器里用 shuffle 完成。</p>
+        <p class="frag muted" data-step="3" style="font-size:19px;margin-top:10px">误差 ~1e-6（题目容差 1e-4），所以不用 TF32 tensor core。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10. 总结 -->
+  <section class="slide" id="s-sum">
+    <h2>总结</h2>
+    <ul style="margin-left:28px">
+      <li class="frag" data-step="1">online softmax 的修正因子 <span class="math">α = e<sup>m − m′</sup></span> 同样作用在输出累加器上：<span class="math">õ ← õ·α + P·V</span></li>
+      <li class="frag" data-step="2">按 key 分块扫描，S、P 只在片上存在一块 → 显存里不再有 N×N 矩阵</li>
+      <li class="frag" data-step="3">一个 Q 块 × 所有 K/V 块 = 一个 thread block；GQA 下把同组的 Q 头拼在一起，K/V 复用更多</li>
+      <li class="frag" data-step="4">最后统一除以 ℓ，计算结果是精确的，不是近似</li>
+    </ul>
+    <p class="frag muted" data-step="5" style="margin-top:40px;font-size:18px">参考：Dao et al., “FlashAttention”, 2022；Dao, “FlashAttention-2”, 2023</p>
+  </section>
+
+  <div id="progress"></div>
+</div>
+</div>
+<div id="nav">
+  <span id="pos"></span>
+  <button id="b-prev">←</button>
+  <button id="b-play">▶ 自动</button>
+  <button id="b-next">→</button>
+</div>
+
+<script>
+// 与 online_softmax.html 同一组分数，方便对照
+const X = [2, 1, 4, 3, 7, 0, 5, 6];
+const VV = [[1, 0], [0, 1], [2, 1], [1, 2], [3, 0], [0, 3], [1, 1], [2, 2]];
+const BC = 2;
+const BAR_H = 130;
+const f3 = v => (v === -Infinity ? '−∞' : (Number.isInteger(v) ? String(v) : v.toFixed(3)));
+const sub = s => String(s).replace(/-/g, '−');
+const vec = o => `(${f3(o[0])}, ${f3(o[1])})`;
+
+// 每块之后的状态 (m, l, o)
+const tiles = X.length / BC;
+const states = [{ m: -Infinity, l: 0, o: [0, 0] }];
+for (let t = 0; t < tiles; t++) {
+  const p = states[t];
+  const xs = X.slice(t * BC, t * BC + BC);
+  const m = Math.max(p.m, ...xs);
+  const alpha = Math.exp(p.m - m);
+  const ps = xs.map(x => Math.exp(x - m));
+  const o = [0, 1].map(c => p.o[c] * alpha + ps.reduce((a, w, j) => a + w * VV[t * BC + j][c], 0));
+  states.push({ m, l: p.l * alpha + ps.reduce((a, b) => a + b, 0), o, alpha, ps });
+}
+
+const ctrl = {};
+
+// ---------- 标准三 kernel ----------
+(() => {
+  const host = document.getElementById('naive-passes');
+  const rows = [
+    ['① S = QK<sup>T</sup>', '读 Q, K', '写 S (N×N)'],
+    ['② P = softmax(S)', '读 S (N×N)', '写 P (N×N)'],
+    ['③ O = P V', '读 P (N×N), V', '写 O'],
+  ];
+  const bars = rows.map(([label, r, w]) => {
+    const el = document.createElement('div');
+    el.className = 'pass';
+    el.innerHTML = `<div class="label">${label}</div>
+      <div class="hbm"><div class="fillbar r"></div><span>${r}</span></div>
+      <div class="hbm"><div class="fillbar w"></div><span>${w}</span></div>`;
+    host.appendChild(el);
+    return [...el.querySelectorAll('.fillbar')];
+  });
+  ctrl['s-naive'] = {
+    steps: 4,
+    render(k) { bars.forEach((bs, i) => bs.forEach(b => { b.style.width = i < k ? '100%' : '0'; })); },
+  };
+})();
+
+// ---------- 逐块数值演示 ----------
+(() => {
+  const withGaps = (arr, f) => arr.map((x, j) => (j > 0 && j % BC === 0 ? '<div class="gap"></div>' : '') + f(x, j)).join('');
+  const cells = document.getElementById('walk-cells');
+  cells.innerHTML = withGaps(X, (x, j) => `<div class="cell">${x}<small>s${j + 1}</small></div>`);
+  const cellEls = [...cells.querySelectorAll('.cell')];
+  const barHost = document.getElementById('walk-bars');
+  barHost.insertAdjacentHTML('beforeend', withGaps(X, () =>
+    '<div class="bar"><div class="v"></div><div class="fill ghost" style="height:0"></div></div>'));
+  const bars = [...barHost.querySelectorAll('.bar')];
+  document.getElementById('walk-v').innerHTML = withGaps(VV, v => `<div>(${v[0]},${v[1]})</div>`);
+  const setBar = (bar, val, cls) => {
+    const fill = bar.querySelector('.fill');
+    fill.className = 'fill' + (cls ? ' ' + cls : '');
+    fill.style.height = (val == null ? 0 : Math.max(val * BAR_H, 2)) + 'px';
+    bar.querySelector('.v').textContent = val == null ? '' : val.toFixed(3);
+  };
+  const $ = id => document.getElementById(id);
+  const calc = $('walk-calc'), note = $('walk-note');
+
+  ctrl['s-walk'] = {
+    steps: tiles + 1,
+    render(k) {
+      const t = Math.min(k, tiles); // 已处理的块数
+      const s = states[t], p = states[Math.max(t - 1, 0)];
+      const raised = t >= 2 && s.m > p.m;
+      const finalStep = k > tiles;
+      cellEls.forEach((c, j) => {
+        const tj = Math.floor(j / BC);
+        c.className = 'cell' + (tj < t - 1 ? ' done' : '') +
+          (tj === t - 1 && !finalStep ? (raised || t === 1 ? ' newmax' : ' cur') : '') + (finalStep ? ' done' : '');
+      });
+      bars.forEach((b, j) => {
+        const tj = Math.floor(j / BC);
+        if (tj >= t) return setBar(b, null, 'ghost');
+        const cls = finalStep ? '' : (tj === t - 1 ? 'fresh' : (raised ? 'scaled' : ''));
+        setBar(b, Math.exp(X[j] - s.m), cls);
+      });
+      $('walk-m').textContent = sub(f3(s.m));
+      $('walk-l').textContent = f3(s.l);
+      $('walk-o').textContent = vec(s.o);
+      $('walk-mbox').classList.toggle('flash', !finalStep && (raised || t === 1));
+      $('walk-lbox').classList.toggle('flash', !finalStep && raised);
+      $('walk-obox').classList.toggle('flash', !finalStep && raised || finalStep);
+
+      if (t === 0) {
+        calc.innerHTML = '初始化：m = −∞，ℓ = 0，õ = (0, 0)<br><span class="muted">按 → 读入第一块（2 个 key）</span>';
+        note.innerHTML = '';
+        return;
+      }
+      if (finalStep) {
+        const out = s.o.map(v => v / s.l);
+        const w = X.map(x => Math.exp(x - s.m));
+        const tot = w.reduce((a, b) => a + b, 0);
+        const ref = [0, 1].map(c => w.reduce((a, wj, j) => a + wj * VV[j][c], 0) / tot);
+        calc.innerHTML = `所有块扫完，统一归一化：<br>o = õ / ℓ = ${vec(s.o)} / ${f3(s.l)}<br>` +
+          `&nbsp;&nbsp;= <b class="green num">(${out[0].toFixed(4)}, ${out[1].toFixed(4)})</b>`;
+        note.innerHTML = `<div class="note ok">直接算 softmax(s)·V = (${ref[0].toFixed(4)}, ${ref[1].toFixed(4)})，一致 ✓<br>` +
+          `整个过程中从未同时保存全部 8 个 p<sub>j</sub>。</div>`;
+        return;
+      }
+      const i0 = (t - 1) * BC;
+      const xs = X.slice(i0, i0 + BC);
+      const alpha = p.m === -Infinity ? '0' : s.alpha.toFixed(3);
+      const pv = [0, 1].map(c => s.ps.reduce((a, w, j) => a + w * VV[i0 + j][c], 0));
+      calc.innerHTML =
+        `块 ${t}：s = [${xs.join(', ')}] &nbsp; m′ = max(${sub(f3(p.m))}, ${Math.max(...xs)}) = <b class="orange">${s.m}</b>` +
+        ` &nbsp; <span class="orange">α = ${alpha}</span><br>` +
+        `p = [${s.ps.map(v => v.toFixed(3)).join(', ')}]<br>` +
+        `ℓ′ = <span class="num">${f3(p.l)}×${alpha} + ${s.ps.reduce((a, b) => a + b, 0).toFixed(3)}</span> = <b class="blue num">${f3(s.l)}</b><br>` +
+        `õ′ = <span class="num">${vec(p.o)}×${alpha} + (${pv[0].toFixed(3)}, ${pv[1].toFixed(3)})</span> = <b class="purple num">${vec(s.o)}</b>`;
+      if (raised) {
+        note.innerHTML = `<div class="note warn">最大值 ${p.m} → ${s.m}：ℓ 和 õ <b>都</b>乘以 α = e<sup>${sub(p.m - s.m)}</sup> = ${s.alpha.toFixed(4)}（橙色柱子同步缩小）</div>`;
+      } else if (t === 1) {
+        note.innerHTML = '<div class="note warn">m = −∞ 时 α = e<sup>−∞</sup> = 0，ℓ、õ 本来就是 0</div>';
+      } else {
+        note.innerHTML = `<div class="note ok">本块最大值 ≤ ${p.m}，α = 1，直接累加</div>`;
+      }
+    },
+  };
+})();
+
+// ---------- 分块动画 ----------
+(() => {
+  const N = 8, D = 4, BR = 4, TBC = 2;
+  const make = (id, rows, cols) => {
+    const el = document.getElementById(id);
+    el.style.gridTemplateColumns = `repeat(${cols}, 30px)`;
+    const cells = [];
+    for (let r = 0; r < rows; r++) {
+      cells.push([]);
+      for (let c = 0; c < cols; c++) {
+        const d = document.createElement('div');
+        d.className = 'mc';
+        el.appendChild(d);
+        cells[r].push(d);
+      }
+    }
+    return cells;
+  };
+  const mq = make('m-q', N, D), mkt = make('m-kt', D, N), ms = make('m-s', N, N);
+  const mv = make('m-v', N, D), mo = make('m-o', N, D);
+  const TR = N / BR, TC = N / TBC;
+  const calc = document.getElementById('tile-calc');
+  const chips = ['q', 'k', 'v', 's', 'o'].map(c => document.getElementById('c-' + c));
+
+  ctrl['s-tile'] = {
+    steps: TR * TC + 1,
+    render(k) {
+      const done = k > TR * TC;
+      const idx = Math.min(k, TR * TC) - 1; // 当前 (i, j)，-1 表示还没开始
+      const bi = idx < 0 ? -1 : Math.floor(idx / TC), bj = idx < 0 ? -1 : idx % TC;
+      const active = idx >= 0 && !done;
+      for (let r = 0; r < N; r++) {
+        const ri = Math.floor(r / BR);
+        mq[r].forEach(c => { c.className = 'mc' + (active && ri === bi ? ' q-on' : ''); });
+        mv[r].forEach(c => { c.className = 'mc' + (active && Math.floor(r / TBC) === bj ? ' v-on' : ''); });
+        mo[r].forEach(c => {
+          let cls = 'mc';
+          if (ri < bi || done) cls += ' o-done';
+          else if (active && ri === bi) cls += ' o-part';
+          c.className = cls;
+          c.style.background = active && ri === bi && !done ? `rgba(91,157,255,${0.15 + 0.55 * (bj + 1) / TC})` : '';
+        });
+        ms[r].forEach((c, col) => {
+          const cj = Math.floor(col / TBC);
+          const order = ri * TC + cj;
+          let cls = 'mc';
+          if (active && ri === bi && cj === bj) cls += ' s-cur';
+          else if (order <= idx || done) cls += ' s-gone';
+          c.className = cls;
+        });
+      }
+      for (let r = 0; r < D; r++)
+        mkt[r].forEach((c, col) => { c.className = 'mc' + (active && Math.floor(col / TBC) === bj ? ' k-on' : ''); });
+      chips.forEach(c => c.classList.toggle('on', active));
+
+      if (idx < 0) {
+        calc.innerHTML = '外层循环：Q 块 i = 0, 1（各 4 行）<br>内层循环：K/V 块 j = 0…3（各 2 个 key）<br>' +
+          '<span class="muted">虚线格 = 算过但从未写回显存的 S 元素</span>';
+      } else if (done) {
+        calc.innerHTML = '全部完成。显存里只读了 Q、K、V，只写了 O。<br>' +
+          '<span class="green">S / P 的 64 个元素从来没有离开过片上存储。</span><br>' +
+          '<span class="muted">代价：每个 Q 块都要把 K、V 完整读一遍 → 用更大的 B<sub>r</sub> 摊薄。</span>';
+      } else {
+        calc.innerHTML = `Q 块 <span class="blue">i = ${bi}</span>，K/V 块 <span class="green">j = ${bj}</span><br>` +
+          `① S<sub>${bi}${bj}</sub> = Q<sub>${bi}</sub> K<sub>${bj}</sub><sup>T</sup> &nbsp;（4 × 2，片上）<br>` +
+          `② 更新 m、ℓ，得 α 和 P<sub>${bi}${bj}</sub><br>` +
+          `③ õ<sub>${bi}</sub> ← õ<sub>${bi}</sub>·α + P<sub>${bi}${bj}</sub> V<sub>${bj}</sub>` +
+          (bj === TC - 1 ? `<br><b class="green">④ O<sub>${bi}</sub> = õ<sub>${bi}</sub> / ℓ，写回显存</b>` : '');
+      }
+    },
+  };
+})();
+
+// ---------- 并行与 GQA ----------
+(() => {
+  const qHost = document.getElementById('gqa-q'), kvHost = document.getElementById('gqa-kv');
+  const BLKS = 4;
+  const qh = [...Array(8)].map((_, h) => {
+    const d = document.createElement('div');
+    d.className = 'head qh';
+    d.innerHTML = `<div style="padding-bottom:4px">h${h}</div>` + [...Array(BLKS)].map(() => '<div class="blk"></div>').join('');
+    qHost.appendChild(d);
+    return d;
+  });
+  const kv = [0, 1].map(g => {
+    const d = document.createElement('div');
+    d.className = 'head kv';
+    d.style.width = (92 * 4 + 30) + 'px';
+    d.textContent = `KV${g}：K、V 各 S 行`;
+    kvHost.appendChild(d);
+    return d;
+  });
+  const note = document.getElementById('gqa-note');
+  const notes = [
+    '',
+    '',
+    '<p style="font-size:19px">MHA 视角：一个 block = 一个头里的 64 行 query。<br>' +
+      '<span class="blue">h0 的第 0 块</span> 读一遍 KV0。</p>',
+    '<p style="font-size:19px">GQA：h0…h3 共用 KV0，而且 Q 布局是 [头, S, d] → 这 4 个头的行<b>在内存里是连续的</b>。</p>' +
+      '<p style="font-size:19px;margin-top:10px">把它们看成 M = 4·S 行的<b>单个</b> attention：<br>' +
+      'grid = (M / B<sub>r</sub>, H<sub>kv</sub>)，每个 block 的 64 行可以跨头，KV0 被 h0…h3 的所有块复用。</p>',
+  ];
+  ctrl['s-gqa'] = {
+    steps: 3,
+    render(k) {
+      qh.forEach((d, h) => {
+        const blks = [...d.querySelectorAll('.blk')];
+        blks.forEach((b, i) => {
+          const on = (k === 2 && h === 0 && i === 0) || (k >= 3 && h < 4);
+          b.classList.toggle('on', on);
+          b.textContent = k >= 3 && h < 4 ? `blk ${h * BLKS + i}` : '';
+        });
+        d.classList.toggle('on', (k === 2 && h === 0) || (k >= 3 && h < 4));
+      });
+      kv[0].classList.toggle('on', k >= 2);
+      note.innerHTML = notes[k];
+    },
+  };
+})();
+
+// ---------- block 内映射 ----------
+(() => {
+  const host = document.getElementById('tgrid');
+  const cells = [];
+  for (let t = 0; t < 128; t++) {
+    const d = document.createElement('div');
+    d.className = 'tcell';
+    host.appendChild(d);
+    cells.push(d);
+  }
+  const tl = document.getElementById('tl');
+  const stages = [
+    ['load K', '→ smem'], null, ['S = QK<sup>T</sup>', 'softmax'], ['写 P'], null,
+    ['load V', '→ smem'], null, ['õ·α + PV', ''], null,
+  ];
+  const tlEls = stages.map(s => {
+    const d = document.createElement('div');
+    d.className = s ? 'tl' : 'tl sync';
+    d.innerHTML = s ? s.filter(Boolean).join('<br>') : 'sync';
+    tl.appendChild(d);
+    return d;
+  });
+  ctrl['s-block'] = {
+    steps: 3 + tlEls.length,
+    render(k) {
+      cells.forEach((c, t) => {
+        c.className = 'tcell' + (k >= 1 && t >= 8 && t < 16 ? ' row' : (t < 32 ? ' w0' : ''));
+      });
+      const cur = k - 4; // 时间线上当前阶段，-1 表示刚出现
+      tlEls.forEach((e, i) => {
+        e.classList.toggle('on', i <= cur);
+        e.classList.toggle('cur', i === cur);
+      });
+    },
+  };
+})();
+
+// ---------- 代码高亮 ----------
+ctrl['s-code'] = {
+  steps: 4,
+  render(k) {
+    for (let i = 0; i < 4; i++)
+      document.getElementById('cl-' + i).style.background = k === i + 1 ? 'rgba(255,169,77,.16)' : '';
+  },
+};
+
+// ---------- 结果 ----------
+ctrl['s-res'] = {
+  steps: 3,
+  render(k) {
+    const on = k >= 1;
+    document.getElementById('r-old').style.height = (on ? 200 : 0) + 'px';
+    document.getElementById('r-new').style.height = (on ? 200 * 1.433 / 13.864 : 0) + 'px';
+    document.getElementById('r-old-t').textContent = on ? '13.86 ms' : '';
+    document.getElementById('r-new-t').textContent = on ? '1.43 ms' : '';
+  },
+};
+
+// ---------- 导航 ----------
+const slides = [...document.querySelectorAll('.slide')];
+let si = 0, step = 0, timer = null;
+const stepsOf = s => Math.max(
+  ...[...s.querySelectorAll('.frag')].map(f => +f.dataset.step), ctrl[s.id] ? ctrl[s.id].steps : 0, 0);
+
+function show() {
+  slides.forEach((s, i) => s.classList.toggle('active', i === si));
+  const s = slides[si];
+  s.querySelectorAll('.frag').forEach(f => f.classList.toggle('on', +f.dataset.step <= step));
+  if (ctrl[s.id]) ctrl[s.id].render(step);
+  document.getElementById('pos').textContent = `${si + 1} / ${slides.length}` + (stepsOf(s) ? ` · 步骤 ${step}/${stepsOf(s)}` : '');
+  document.getElementById('progress').style.width = ((si + 1) / slides.length * 100) + '%';
+  location.hash = si + 1;
+}
+function next() {
+  if (step < stepsOf(slides[si])) step++;
+  else if (si < slides.length - 1) { si++; step = 0; }
+  else stopPlay();
+  show();
+}
+function prev() {
+  if (step > 0) step--;
+  else if (si > 0) { si--; step = stepsOf(slides[si]); }
+  show();
+}
+function stopPlay() { clearInterval(timer); timer = null; document.getElementById('b-play').textContent = '▶ 自动'; }
+function togglePlay() {
+  if (timer) return stopPlay();
+  timer = setInterval(next, 2200);
+  document.getElementById('b-play').textContent = '⏸ 暂停';
+}
+document.addEventListener('keydown', e => {
+  if (['ArrowRight', ' ', 'PageDown', 'Enter'].includes(e.key)) { e.preventDefault(); next(); }
+  else if (['ArrowLeft', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); prev(); }
+  else if (e.key === 'p' || e.key === 'P') togglePlay();
+  else if (e.key === 'f' || e.key === 'F') {
+    document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  } else if (e.key === 'Home') { si = 0; step = 0; show(); }
+});
+document.getElementById('stage').addEventListener('click', e => { if (!e.target.closest('#nav')) next(); });
+document.getElementById('b-next').onclick = next;
+document.getElementById('b-prev').onclick = prev;
+document.getElementById('b-play').onclick = togglePlay;
+
+function fit() {
+  const s = Math.min(innerWidth / 1280, (innerHeight - 40) / 720);
+  document.getElementById('stage').style.transform = `scale(${s})`;
+}
+addEventListener('resize', fit);
+fit();
+const h = parseInt(location.hash.slice(1), 10);
+if (h >= 1 && h <= slides.length) si = h - 1;
+show();
+</script>
+</body>
+</html>
