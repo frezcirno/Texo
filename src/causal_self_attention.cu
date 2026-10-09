@@ -1,15 +1,12 @@
-// Fused FP32 multi-head cross-attention. Q and the output are (M, H, d), K and
-// V are (N, H, d), all row-major; head h computes
-// O_h = softmax(Q_h K_h^T / sqrt(d)) V_h. Each head is an ordinary attention
-// over matrices with row stride H * d, so the kernel is the one in attention.cu
-// with a head index folded into blockIdx.y (as in mhsa.cu).
-//
-// One block owns BR query rows and a DV-wide slice of one head's output. It
-// walks the keys in BC-wide tiles: S = Q K_j^T stays in registers, the online
-// softmax rescales the running output, and P V_j accumulates into it, so the
-// M x N score matrix is never stored. As in softmax_online.cu, small grids
-// split the keys across blocks; each split writes a partial (max, sum, O), and
-// the last block of an output tile merges them.
+// Fused FP32 causal self-attention: O = softmax(Q K^T / sqrt(d) + mask) V,
+// where query i attends only to keys j <= i.
+// One block owns BR query rows and a DV-wide slice of the output columns. It
+// walks the keys in BC-wide tiles up to the diagonal: S = Q K_j^T stays in
+// registers, the online softmax rescales the running output, and P V_j
+// accumulates into it, so the M x M score matrix is never stored. As in
+// softmax_online.cu, small grids split the keys across blocks; each split
+// writes a partial (max, sum, O), and the last block of an output tile merges
+// them.
 #include <algorithm>
 #include <cstdint>
 #include <cuda_runtime.h>
@@ -52,14 +49,13 @@ template <int N> __device__ __forceinline__ void copy_wait() {
 #endif
 }
 
-// Stage a ROWS x COLS tile of a rows x cols matrix with global row stride ld
-// into shared memory with row stride LD, in groups of four floats. Outside
-// elements are zero. VEC: the base is 16-byte aligned and cols and ld are
-// multiples of 4, so each group is either complete or entirely outside.
-// Otherwise copy elements one at a time.
+// Stage a ROWS x COLS tile of a row-major rows x cols matrix into shared
+// memory with row stride LD, in groups of four floats. Outside elements are
+// zero. VEC: the base is 16-byte aligned and cols % 4 == 0, so each group is
+// either complete or entirely outside. Otherwise copy elements one at a time.
 template <bool VEC, int ROWS, int COLS, int LD, int THREADS>
 __device__ __forceinline__ void stage_tile(float *tile, const float *input,
-                                           size_t rows, size_t cols, size_t ld,
+                                           size_t rows, size_t cols,
                                            size_t row0, size_t col0) {
   constexpr int GROUPS = ROWS * COLS / 4;
 #pragma unroll
@@ -72,15 +68,15 @@ __device__ __forceinline__ void stage_tile(float *tile, const float *input,
     float *dst = tile + row * LD + col;
     if (VEC) {
       const bool valid = global_row < rows && global_col < cols;
-      copy_async<16>(dst, valid ? input + global_row * ld + global_col : input,
-                     valid);
+      copy_async<16>(
+          dst, valid ? input + global_row * cols + global_col : input, valid);
     } else {
 #pragma unroll
       for (int e = 0; e < 4; ++e) {
         const bool valid = global_row < rows && global_col + e < cols;
-        copy_async<4>(dst + e,
-                      valid ? input + global_row * ld + global_col + e : input,
-                      valid);
+        copy_async<4>(
+            dst + e, valid ? input + global_row * cols + global_col + e : input,
+            valid);
       }
     }
   }
@@ -92,21 +88,11 @@ constexpr int KC = 32;       // head-dimension chunk of the S = Q K^T reduction
 constexpr int LDK = KC + 4;  // padded Q/K chunk rows: conflict-free K reads
 constexpr int LDP = BC + 4;  // padded P rows
 constexpr int THREADS = 256; // 16 x 16 threads, 4 rows each
-
-// One pipeline stage holds a Q chunk and a K chunk; once a tile's last chunk
-// has been read, its stage is reused for P.
-union Stage {
-  struct {
-    float q[BR][LDK];
-    float k[BC][LDK];
-  } qk;
-  float p[BR][LDP];
-};
-
-template <int DV> struct alignas(16) SharedStorage {
-  Stage stage[2]; // Q/K double buffer, indexed by chunk parity
-  float v[BC][DV];
-};
+constexpr int STAGE = (BR + BC) * LDK;
+static_assert(BR * LDP <= STAGE, "P reuses a Q/K stage");
+// The diagonal tile starts at row0, so every row sees at least one key in
+// every tile it visits.
+static_assert(BR == BC, "Query and key tiles share the diagonal");
 
 constexpr int MAX_PARTIALS = 512; // (output tile, key split) pairs
 constexpr int MAX_DV = 128;
@@ -119,26 +105,28 @@ __device__ unsigned g_done[MAX_PARTIALS];
 // tx + 16 * c, so lanes read consecutive padded K rows; for O it holds the
 // four-column groups tx * 4 + 64 * h. Both layouts keep a row on the 16 lanes
 // of one half-warp, so row max and sum are four xor shuffles.
-// Scores are kept in base 2: scale_log2 = log2(e) / sqrt(d).
+// Scores are rounded like the FP32 reference, s * (1 / sqrt(d)) and then
+// expf: with large inputs the logits reach thousands, and folding log2(e)
+// into the scale rounds them differently enough to move near-tied weights.
 template <bool VEC, int DV>
 __global__ __launch_bounds__(THREADS) void attention_kernel(
     const float *__restrict__ Q, const float *__restrict__ K,
     const float *__restrict__ V, float *__restrict__ output, int M, int N,
-    int d, int ld, int tiles_d, float scale_log2, int split_tiles) {
+    int d, float scale, int split_tiles) {
   static_assert(DV % 64 == 0 && DV <= MAX_DV, "Whole float4 column groups");
   constexpr int OC = DV / 16; // output columns per thread
-  extern __shared__ __align__(16) unsigned char smem_raw[];
-  auto &smem = *reinterpret_cast<SharedStorage<DV> *>(smem_raw);
+  extern __shared__ __align__(16) float smem[];
+  float *vs = smem + 2 * STAGE;
 
   const int tx = threadIdx.x % 16, ty = threadIdx.x / 16;
-  const int head = blockIdx.y / tiles_d;
-  const int row0 = blockIdx.x * BR, dv0 = (blockIdx.y % tiles_d) * DV;
-  Q += size_t(head) * d;
-  K += size_t(head) * d;
-  V += size_t(head) * d;
-  output += size_t(head) * d;
+  // The last query tiles have the most keys, so schedule them first.
+  const int tile_m = gridDim.x - 1 - blockIdx.x;
+  const int row0 = tile_m * BR, dv0 = blockIdx.y * DV;
   const int split = blockIdx.z, splits = gridDim.z;
-  const int tiles_n = (N + BC - 1) / BC;
+  const int tiles_n = min((N + BC - 1) / BC, tile_m + 1); // up to the diagonal
+  const int active = (tiles_n + split_tiles - 1) / split_tiles;
+  if (split >= active)
+    return; // entirely above the diagonal
   const int j_begin = split * split_tiles;
   const int j_end = min(tiles_n, j_begin + split_tiles);
   const int nc = (d + KC - 1) / KC;
@@ -147,12 +135,10 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
   // Chunks are numbered across key tiles, so the next tile's first chunk is
   // prefetched while the current tile finishes.
   auto load_qk = [&](int t) {
-    auto &stage = smem.stage[t & 1].qk;
+    float *stage = smem + (t & 1) * STAGE;
     const size_t key0 = size_t(j_begin + t / nc) * BC, k0 = (t % nc) * KC;
-    stage_tile<VEC, BR, KC, LDK, THREADS>(&stage.q[0][0], Q, M, d, ld, row0,
-                                          k0);
-    stage_tile<VEC, BC, KC, LDK, THREADS>(&stage.k[0][0], K, N, d, ld, key0,
-                                          k0);
+    stage_tile<VEC, BR, KC, LDK, THREADS>(stage, Q, M, d, row0, k0);
+    stage_tile<VEC, BC, KC, LDK, THREADS>(stage + BR * LDK, K, N, d, key0, k0);
   };
 
   float m[4], l[4], o[4][OC];
@@ -179,26 +165,26 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
     for (int chunk = 0; chunk < nc; ++chunk, ++t) {
       // Chunk t (and V of the previous tile) has arrived, and every warp
       // finished the previous chunk and the previous P V, so the other stage
-      // (which held P) and the V tile can be refilled.
+      // (which held P) and vs can be refilled.
       copy_wait<0>();
       __syncthreads();
       if (chunk == 0)
-        stage_tile<VEC, BC, DV, DV, THREADS>(&smem.v[0][0], V, N, d, ld,
-                                             size_t(j) * BC, dv0);
+        stage_tile<VEC, BC, DV, DV, THREADS>(vs, V, N, d, size_t(j) * BC, dv0);
       if (t + 1 < chunks)
         load_qk(t + 1);
       copy_commit();
 
-      const auto &stage = smem.stage[t & 1].qk;
+      const float *qs = smem + (t & 1) * STAGE, *ks = qs + BR * LDK;
 #pragma unroll
       for (int k = 0; k < KC; k += 4) {
         float4 q[4], key[4];
 #pragma unroll
         for (int i = 0; i < 4; ++i)
-          q[i] = *reinterpret_cast<const float4 *>(&stage.q[ty * 4 + i][k]);
+          q[i] = *reinterpret_cast<const float4 *>(qs + (ty * 4 + i) * LDK + k);
 #pragma unroll
         for (int c = 0; c < 4; ++c)
-          key[c] = *reinterpret_cast<const float4 *>(&stage.k[tx + 16 * c][k]);
+          key[c] =
+              *reinterpret_cast<const float4 *>(ks + (tx + 16 * c) * LDK + k);
 #pragma unroll
         for (int i = 0; i < 4; ++i)
 #pragma unroll
@@ -212,16 +198,19 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
     }
 
     // Online softmax: rescale the running sum and output to the new max.
-    // Every key tile has a valid column, so the new max is finite and the
-    // first tile's alpha is exp2(-inf) = 0.
-    float (&ps)[BR][LDP] = smem.stage[(t - 1) & 1].p; // the last chunk's stage
-    __syncthreads(); // every warp finished reading it
+    // Every row has a valid column in every key tile (key j * BC <= row0), so
+    // the new max is finite and the first tile's alpha is exp(-inf) = 0.
+    float *ps = smem + ((t - 1) & 1) * STAGE; // the last chunk's stage
+    __syncthreads();                          // every warp finished reading it
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
+      // Rows past M only need some finite key, so they keep the < N bound.
+      const int last_key = min(row0 + ty * 4 + i, N - 1);
       float tile_max = -INFINITY;
 #pragma unroll
       for (int c = 0; c < 4; ++c) {
-        s[i][c] = j * BC + tx + 16 * c < N ? s[i][c] * scale_log2 : -INFINITY;
+        s[i][c] =
+            j * BC + tx + 16 * c <= last_key ? s[i][c] * scale : -INFINITY;
         tile_max = fmaxf(tile_max, s[i][c]);
       }
 #pragma unroll
@@ -229,13 +218,13 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
         tile_max =
             fmaxf(tile_max, __shfl_xor_sync(0xffffffff, tile_max, offset));
       const float next_max = fmaxf(m[i], tile_max);
-      const float alpha = exp2f(m[i] - next_max);
+      const float alpha = expf(m[i] - next_max);
       float tile_sum = 0.0f;
 #pragma unroll
       for (int c = 0; c < 4; ++c) {
-        const float p = exp2f(s[i][c] - next_max);
+        const float p = expf(s[i][c] - next_max);
         tile_sum += p;
-        ps[ty * 4 + i][tx + 16 * c] = p;
+        ps[(ty * 4 + i) * LDP + tx + 16 * c] = p;
       }
       l[i] = l[i] * alpha + tile_sum;
       m[i] = next_max;
@@ -254,7 +243,8 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
       float p[4][4];
 #pragma unroll
       for (int i = 0; i < 4; ++i) {
-        const float4 v = *reinterpret_cast<const float4 *>(&ps[ty * 4 + i][k]);
+        const float4 v =
+            *reinterpret_cast<const float4 *>(ps + (ty * 4 + i) * LDP + k);
         p[i][0] = v.x, p[i][1] = v.y, p[i][2] = v.z, p[i][3] = v.w;
       }
 #pragma unroll
@@ -263,7 +253,7 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
 #pragma unroll
         for (int h = 0; h < DV / 64; ++h) {
           const float4 v = *reinterpret_cast<const float4 *>(
-              &smem.v[k + kk][h * 64 + tx * 4]);
+              vs + (k + kk) * DV + h * 64 + tx * 4);
           b[h * 4] = v.x, b[h * 4 + 1] = v.y, b[h * 4 + 2] = v.z,
                 b[h * 4 + 3] = v.w;
         }
@@ -283,7 +273,7 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
     for (int offset = 8; offset > 0; offset >>= 1)
       l[i] += __shfl_xor_sync(0xffffffff, l[i], offset);
 
-  if (splits == 1) {
+  if (active == 1) {
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
       const int row = row0 + ty * 4 + i;
@@ -294,7 +284,7 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
       for (int c = 0; c < OC; ++c) {
         const int col = dv0 + (c / 4) * 64 + tx * 4 + c % 4;
         if (col < d)
-          output[size_t(row) * ld + col] = o[i][c] * inverse_sum;
+          output[size_t(row) * d + col] = o[i][c] * inverse_sum;
       }
     }
     return;
@@ -320,7 +310,7 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
   __shared__ bool is_last;
   __syncthreads();
   if (threadIdx.x == 0) {
-    is_last = atomicAdd(&g_done[tile], 1) == unsigned(splits) - 1;
+    is_last = atomicAdd(&g_done[tile], 1) == unsigned(active) - 1;
     if (is_last)
       g_done[tile] = 0; // 为下一次调用重置计数器
   }
@@ -338,21 +328,21 @@ __global__ __launch_bounds__(THREADS) void attention_kernel(
     if (row >= M || col >= d)
       continue;
     float running_max = -INFINITY, running_sum = 0.0f, value = 0.0f;
-    for (int sp = 0; sp < splits; ++sp) {
+    for (int sp = 0; sp < active; ++sp) {
       const float2 ml = __ldcg(tile_ml + sp * BR + r);
       const float partial = __ldcg(tile_o + (size_t(sp) * BR + r) * DV + c);
       const float next_max = fmaxf(running_max, ml.x);
-      const float a = exp2f(running_max - next_max), b = exp2f(ml.x - next_max);
+      const float a = expf(running_max - next_max), b = expf(ml.x - next_max);
       running_sum = running_sum * a + ml.y * b;
       value = value * a + partial * b;
       running_max = next_max;
     }
-    output[size_t(row) * ld + col] = value / running_sum;
+    output[size_t(row) * d + col] = value / running_sum;
   }
 }
 
 template <int DV> constexpr size_t smem_bytes() {
-  return sizeof(SharedStorage<DV>);
+  return (2 * STAGE + BC * DV) * sizeof(float);
 }
 
 // Opt in to the dynamic shared memory once per kernel and return how many
@@ -379,13 +369,13 @@ template <bool VEC, int DV> static int setup(int device) {
 }
 
 // Split the keys only when the output tiles fill less than one wave, keeping
-// at least four key tiles per split.
+// at least four key tiles per split. The split size is set by the last query
+// tile; earlier tiles stop at the diagonal and use fewer splits.
 template <bool VEC, int DV>
 static void launch(const float *Q, const float *K, const float *V,
-                   float *output, int M, int N, int d, int heads, int per_sm,
-                   int sms) {
+                   float *output, int M, int N, int d, int per_sm, int sms) {
   const int tiles_m = (M + BR - 1) / BR, tiles_d = (d + DV - 1) / DV;
-  const int tiles_n = (N + BC - 1) / BC, tiles = tiles_m * tiles_d * heads;
+  const int tiles_n = (N + BC - 1) / BC, tiles = tiles_m * tiles_d;
   const int slots = per_sm * sms;
   int splits = 1;
   if (tiles < slots) {
@@ -396,16 +386,15 @@ static void launch(const float *Q, const float *K, const float *V,
   }
   const int split_tiles = (tiles_n + splits - 1) / splits;
   splits = (tiles_n + split_tiles - 1) / split_tiles; // no empty split
-  const float scale_log2 = 1.4426950408889634f / sqrtf(float(d));
+  const float scale = 1.0f / sqrtf(float(d));
   attention_kernel<VEC, DV>
-      <<<dim3(tiles_m, tiles_d * heads, splits), THREADS, smem_bytes<DV>()>>>(
-          Q, K, V, output, M, N, d, d * heads, tiles_d, scale_log2,
-          split_tiles);
+      <<<dim3(tiles_m, tiles_d, splits), THREADS, smem_bytes<DV>()>>>(
+          Q, K, V, output, M, N, d, scale, split_tiles);
 }
 
 template <bool VEC>
 static void dispatch(const float *Q, const float *K, const float *V,
-                     float *output, int M, int N, int d, int heads) {
+                     float *output, int M, int d) {
   int device = 0, sms = 1;
   cudaGetDevice(&device);
   cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
@@ -413,23 +402,22 @@ static void dispatch(const float *Q, const float *K, const float *V,
   // than pre-Ampere devices allow.
   const int wide = d > 64 ? setup<VEC, 128>(device) : 0;
   if (wide > 0)
-    launch<VEC, 128>(Q, K, V, output, M, N, d, heads, wide, sms);
+    launch<VEC, 128>(Q, K, V, output, M, M, d, wide, sms);
   else
-    launch<VEC, 64>(Q, K, V, output, M, N, d, heads, setup<VEC, 64>(device),
-                    sms);
+    launch<VEC, 64>(Q, K, V, output, M, M, d, setup<VEC, 64>(device), sms);
 }
 
-// Q, output (M, H, D) and K, V (N, H, D), all row-major device pointers.
+// Q, K, V and output (M, d), all row-major device pointers.
 extern "C" void solve(const float *Q, const float *K, const float *V,
-                      float *output, int M, int N, int H, int D) {
-  if (M <= 0 || N <= 0 || H <= 0 || D <= 0)
+                      float *output, int M, int d) {
+  if (M <= 0 || d <= 0)
     return;
-  const bool vec = D % 4 == 0 && ((reinterpret_cast<uintptr_t>(Q) |
+  const bool vec = d % 4 == 0 && ((reinterpret_cast<uintptr_t>(Q) |
                                    reinterpret_cast<uintptr_t>(K) |
                                    reinterpret_cast<uintptr_t>(V)) &
                                   15) == 0;
   if (vec)
-    dispatch<true>(Q, K, V, output, M, N, D, H);
+    dispatch<true>(Q, K, V, output, M, d);
   else
-    dispatch<false>(Q, K, V, output, M, N, D, H);
+    dispatch<false>(Q, K, V, output, M, d);
 }
